@@ -5,7 +5,11 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <limits>
+#include <numeric>
 #include <string>
+#include <unordered_map>
+#include <utility>
 #include <vector>
 
 namespace GifExporter {
@@ -19,30 +23,10 @@ constexpr std::array<int, kOrderedDitherSize * kOrderedDitherSize> kBayer4x4 = {
     3, 11, 1, 9,
     15, 7, 13, 5};
 
-constexpr std::array<std::uint8_t, 3> kLevels3 = {0, 128, 255};
-constexpr std::array<std::uint8_t, 4> kLevels4 = {0, 85, 170, 255};
-constexpr std::array<std::uint8_t, 5> kLevels5 = {0, 64, 128, 191, 255};
-constexpr std::array<std::uint8_t, 6> kLevels6 = {0, 51, 102, 153, 204, 255};
-constexpr std::array<std::uint8_t, 7> kLevels7 = {0, 43, 85, 128, 170, 213, 255};
-
 struct PaletteColor {
   std::uint8_t red;
   std::uint8_t green;
   std::uint8_t blue;
-};
-
-struct PaletteConfig {
-  int tableSize;
-  const std::uint8_t* redLevels;
-  int redCount;
-  const std::uint8_t* greenLevels;
-  int greenCount;
-  const std::uint8_t* blueLevels;
-  int blueCount;
-  int activeColorCount;
-  std::uint8_t transparentIndex;
-  int minimumCodeSize;
-  std::uint8_t packedField;
 };
 
 struct DiffRect {
@@ -53,6 +37,23 @@ struct DiffRect {
 
   int width() const { return right - left; }
   int height() const { return bottom - top; }
+};
+
+struct ColorSample {
+  std::uint8_t red;
+  std::uint8_t green;
+  std::uint8_t blue;
+};
+
+struct ColorBox {
+  std::size_t begin = 0;
+  std::size_t end = 0;
+  std::uint8_t minRed = 0;
+  std::uint8_t maxRed = 0;
+  std::uint8_t minGreen = 0;
+  std::uint8_t maxGreen = 0;
+  std::uint8_t minBlue = 0;
+  std::uint8_t maxBlue = 0;
 };
 
 int sanitizeMaxColors(int maxColors) {
@@ -92,86 +93,6 @@ int paletteMinimumCodeSize(int tableSize) {
   default:
     return 8;
   }
-}
-
-PaletteConfig makePaletteConfig(const GifEncoderOptions& options) {
-  const int tableSize = sanitizeMaxColors(options.maxColors);
-
-  PaletteConfig config{};
-  config.tableSize = tableSize;
-  config.transparentIndex = static_cast<std::uint8_t>(tableSize - 1);
-  config.minimumCodeSize = paletteMinimumCodeSize(tableSize);
-  config.packedField = static_cast<std::uint8_t>(0x80 | 0x70 | paletteSizeCode(tableSize));
-
-  switch (tableSize) {
-  case 32:
-    config.redLevels = kLevels3.data();
-    config.redCount = static_cast<int>(kLevels3.size());
-    config.greenLevels = kLevels3.data();
-    config.greenCount = static_cast<int>(kLevels3.size());
-    config.blueLevels = kLevels3.data();
-    config.blueCount = static_cast<int>(kLevels3.size());
-    break;
-  case 64:
-    config.redLevels = kLevels4.data();
-    config.redCount = static_cast<int>(kLevels4.size());
-    config.greenLevels = kLevels4.data();
-    config.greenCount = static_cast<int>(kLevels4.size());
-    config.blueLevels = kLevels4.data();
-    config.blueCount = static_cast<int>(kLevels4.size());
-    break;
-  case 128:
-    config.redLevels = kLevels5.data();
-    config.redCount = static_cast<int>(kLevels5.size());
-    config.greenLevels = kLevels5.data();
-    config.greenCount = static_cast<int>(kLevels5.size());
-    config.blueLevels = kLevels5.data();
-    config.blueCount = static_cast<int>(kLevels5.size());
-    break;
-  default:
-    config.redLevels = kLevels6.data();
-    config.redCount = static_cast<int>(kLevels6.size());
-    config.greenLevels = kLevels7.data();
-    config.greenCount = static_cast<int>(kLevels7.size());
-    config.blueLevels = kLevels6.data();
-    config.blueCount = static_cast<int>(kLevels6.size());
-    break;
-  }
-
-  config.activeColorCount = config.redCount * config.greenCount * config.blueCount;
-  if (options.useTransparency && config.activeColorCount >= config.tableSize) {
-    config.activeColorCount = config.tableSize - 1;
-  }
-  config.activeColorCount = std::max(1, config.activeColorCount);
-
-  return config;
-}
-
-int quantizeLevel(float value, int maxIndex) {
-  const float scaled = std::clamp(value, 0.0F, 255.0F) * static_cast<float>(maxIndex) / 255.0F;
-  const int quantized = static_cast<int>(std::lround(scaled));
-  return std::clamp(quantized, 0, maxIndex);
-}
-
-std::uint8_t paletteIndexFor(float red, float green, float blue, const PaletteConfig& config) {
-  const int rIndex = quantizeLevel(red, config.redCount - 1);
-  const int gIndex = quantizeLevel(green, config.greenCount - 1);
-  const int bIndex = quantizeLevel(blue, config.blueCount - 1);
-  const int index = (rIndex * config.greenCount + gIndex) * config.blueCount + bIndex;
-  return static_cast<std::uint8_t>(std::clamp(index, 0, config.activeColorCount - 1));
-}
-
-PaletteColor paletteColorFor(std::uint8_t index, const PaletteConfig& config) {
-  int clampedIndex = std::clamp<int>(index, 0, config.activeColorCount - 1);
-  const int redIndex = clampedIndex / (config.greenCount * config.blueCount);
-  const int remainder = clampedIndex % (config.greenCount * config.blueCount);
-  const int greenIndex = remainder / config.blueCount;
-  const int blueIndex = remainder % config.blueCount;
-
-  return {
-      config.redLevels[redIndex],
-      config.greenLevels[greenIndex],
-      config.blueLevels[blueIndex]};
 }
 
 void appendU16LE(std::vector<std::uint8_t>& bytes, int value) {
@@ -244,38 +165,89 @@ private:
 };
 
 std::vector<std::uint8_t> encodeLzwIndices(const std::vector<std::uint8_t>& indices, int minimumCodeSize) {
+  if (indices.empty()) {
+    return {};
+  }
+
   const int clearCode = 1 << minimumCodeSize;
   const int endOfInformationCode = clearCode + 1;
 
-  GifBitPacker packer;
-  int codeSize = minimumCodeSize + 1;
+  std::vector<int> codes;
+  codes.reserve(indices.size() / 2U + 16U);
+
+  std::unordered_map<std::string, int> dictionary;
+  dictionary.reserve(4096);
+
+  auto resetDictionary = [&]() {
+    dictionary.clear();
+    for (int code = 0; code < clearCode; ++code) {
+      dictionary.emplace(std::string(1, static_cast<char>(code)), code);
+    }
+  };
+
+  resetDictionary();
+  codes.push_back(clearCode);
+
+  std::string sequence(1, static_cast<char>(indices.front()));
   int nextDictionaryCode = endOfInformationCode + 1;
-  bool firstLiteralAfterReset = true;
 
-  packer.writeCode(clearCode, codeSize);
+  for (std::size_t index = 1; index < indices.size(); ++index) {
+    const char symbol = static_cast<char>(indices[index]);
+    std::string extendedSequence = sequence;
+    extendedSequence.push_back(symbol);
 
-  for (std::uint8_t index : indices) {
-    packer.writeCode(index, codeSize);
-
-    if (firstLiteralAfterReset) {
-      firstLiteralAfterReset = false;
+    const auto found = dictionary.find(extendedSequence);
+    if (found != dictionary.end()) {
+      sequence = std::move(extendedSequence);
       continue;
     }
 
-    ++nextDictionaryCode;
-    if (nextDictionaryCode == (1 << codeSize) && codeSize < 12) {
-      ++codeSize;
+    codes.push_back(dictionary.at(sequence));
+
+    if (nextDictionaryCode < 4096) {
+      dictionary.emplace(std::move(extendedSequence), nextDictionaryCode);
+      ++nextDictionaryCode;
+    } else {
+      codes.push_back(clearCode);
+      resetDictionary();
+      nextDictionaryCode = endOfInformationCode + 1;
     }
 
-    if (nextDictionaryCode >= 4096) {
-      packer.writeCode(clearCode, codeSize);
-      codeSize = minimumCodeSize + 1;
-      nextDictionaryCode = endOfInformationCode + 1;
-      firstLiteralAfterReset = true;
-    }
+    sequence.assign(1, symbol);
   }
 
-  packer.writeCode(endOfInformationCode, codeSize);
+  codes.push_back(dictionary.at(sequence));
+  codes.push_back(endOfInformationCode);
+
+  GifBitPacker packer;
+  int codeSize = minimumCodeSize + 1;
+  nextDictionaryCode = endOfInformationCode + 1;
+  bool sawPreviousCode = false;
+
+  for (int code : codes) {
+    packer.writeCode(code, codeSize);
+
+    if (code == clearCode) {
+      codeSize = minimumCodeSize + 1;
+      nextDictionaryCode = endOfInformationCode + 1;
+      sawPreviousCode = false;
+      continue;
+    }
+
+    if (code == endOfInformationCode) {
+      break;
+    }
+
+    if (sawPreviousCode && nextDictionaryCode < 4096) {
+      ++nextDictionaryCode;
+      if (nextDictionaryCode == (1 << codeSize) && codeSize < 12) {
+        ++codeSize;
+      }
+    }
+
+    sawPreviousCode = true;
+  }
+
   return packer.finish();
 }
 
@@ -287,43 +259,271 @@ void appendImageDataBlocks(
     const std::size_t remaining = compressedBytes.size() - offset;
     const std::size_t blockSize = std::min<std::size_t>(255, remaining);
     bytes.push_back(static_cast<std::uint8_t>(blockSize));
-    bytes.insert(bytes.end(), compressedBytes.begin() + static_cast<std::ptrdiff_t>(offset),
-                 compressedBytes.begin() + static_cast<std::ptrdiff_t>(offset + blockSize));
+    bytes.insert(
+        bytes.end(),
+        compressedBytes.begin() + static_cast<std::ptrdiff_t>(offset),
+        compressedBytes.begin() + static_cast<std::ptrdiff_t>(offset + blockSize));
     offset += blockSize;
   }
   bytes.push_back(0x00);
 }
 
-void buildGlobalPalette(
-    std::vector<std::uint8_t>& paletteBytes,
-    const GifEncoderOptions& options,
-    const PaletteConfig& config) {
-  paletteBytes.assign(static_cast<std::size_t>(config.tableSize) * 3U, 0);
-
-  for (int index = 0; index < config.activeColorCount; ++index) {
-    const PaletteColor color = paletteColorFor(static_cast<std::uint8_t>(index), config);
-    const int paletteOffset = index * 3;
-    paletteBytes[paletteOffset + 0] = color.red;
-    paletteBytes[paletteOffset + 1] = color.green;
-    paletteBytes[paletteOffset + 2] = color.blue;
+std::vector<int> buildSampledFrameIndices(std::size_t frameCount, std::size_t limit) {
+  std::vector<int> indices;
+  if (frameCount == 0) {
+    return indices;
   }
 
-  const int fillStart = config.activeColorCount * 3;
-  if (fillStart < static_cast<int>(paletteBytes.size())) {
-    const PaletteColor lastColor = paletteColorFor(static_cast<std::uint8_t>(config.activeColorCount - 1), config);
-    for (std::size_t offset = static_cast<std::size_t>(fillStart); offset < paletteBytes.size(); offset += 3) {
-      paletteBytes[offset + 0] = lastColor.red;
-      paletteBytes[offset + 1] = lastColor.green;
-      paletteBytes[offset + 2] = lastColor.blue;
+  const std::size_t sampleCount = std::min(frameCount, limit);
+  indices.reserve(sampleCount);
+  if (sampleCount == frameCount) {
+    for (std::size_t index = 0; index < frameCount; ++index) {
+      indices.push_back(static_cast<int>(index));
+    }
+    return indices;
+  }
+
+  for (std::size_t index = 0; index < sampleCount; ++index) {
+    const double position = static_cast<double>(index) * static_cast<double>(frameCount - 1) /
+        static_cast<double>(sampleCount - 1);
+    indices.push_back(static_cast<int>(std::lround(position)));
+  }
+
+  return indices;
+}
+
+void composePaletteSample(
+    const std::vector<std::uint8_t>& rgbaPixels,
+    std::size_t pixelOffset,
+    const GifEncoderOptions& options,
+    ColorSample& sample,
+    bool& includeSample) {
+  const std::uint8_t sourceAlphaByte = rgbaPixels[pixelOffset + 3];
+  const bool belowTransparencyThreshold = sourceAlphaByte <= options.transparentAlphaThreshold;
+  if (options.useTransparency && belowTransparencyThreshold) {
+    includeSample = false;
+    return;
+  }
+
+  const std::uint8_t alphaByte = belowTransparencyThreshold ? 0 : sourceAlphaByte;
+  const float alpha = static_cast<float>(alphaByte) / 255.0F;
+  const float sourceRed = static_cast<float>(rgbaPixels[pixelOffset + 0]);
+  const float sourceGreen = static_cast<float>(rgbaPixels[pixelOffset + 1]);
+  const float sourceBlue = static_cast<float>(rgbaPixels[pixelOffset + 2]);
+
+  const bool needsMatteComposite = !options.useTransparency || alphaByte < 255;
+  const float red = needsMatteComposite
+      ? sourceRed * alpha + static_cast<float>(options.matteRed) * (1.0F - alpha)
+      : sourceRed;
+  const float green = needsMatteComposite
+      ? sourceGreen * alpha + static_cast<float>(options.matteGreen) * (1.0F - alpha)
+      : sourceGreen;
+  const float blue = needsMatteComposite
+      ? sourceBlue * alpha + static_cast<float>(options.matteBlue) * (1.0F - alpha)
+      : sourceBlue;
+
+  sample.red = static_cast<std::uint8_t>(std::clamp(std::lround(red), 0L, 255L));
+  sample.green = static_cast<std::uint8_t>(std::clamp(std::lround(green), 0L, 255L));
+  sample.blue = static_cast<std::uint8_t>(std::clamp(std::lround(blue), 0L, 255L));
+  includeSample = true;
+}
+
+void computeBoxBounds(std::vector<ColorSample>& samples, ColorBox& box) {
+  if (box.begin >= box.end) {
+    return;
+  }
+
+  box.minRed = box.maxRed = samples[box.begin].red;
+  box.minGreen = box.maxGreen = samples[box.begin].green;
+  box.minBlue = box.maxBlue = samples[box.begin].blue;
+
+  for (std::size_t index = box.begin + 1; index < box.end; ++index) {
+    const ColorSample& sample = samples[index];
+    box.minRed = std::min(box.minRed, sample.red);
+    box.maxRed = std::max(box.maxRed, sample.red);
+    box.minGreen = std::min(box.minGreen, sample.green);
+    box.maxGreen = std::max(box.maxGreen, sample.green);
+    box.minBlue = std::min(box.minBlue, sample.blue);
+    box.maxBlue = std::max(box.maxBlue, sample.blue);
+  }
+}
+
+int boxLongestAxis(const ColorBox& box) {
+  const int redRange = static_cast<int>(box.maxRed) - static_cast<int>(box.minRed);
+  const int greenRange = static_cast<int>(box.maxGreen) - static_cast<int>(box.minGreen);
+  const int blueRange = static_cast<int>(box.maxBlue) - static_cast<int>(box.minBlue);
+
+  if (redRange >= greenRange && redRange >= blueRange) {
+    return 0;
+  }
+  if (greenRange >= blueRange) {
+    return 1;
+  }
+  return 2;
+}
+
+double boxScore(const ColorBox& box) {
+  const double redRange = static_cast<double>(box.maxRed) - static_cast<double>(box.minRed);
+  const double greenRange = static_cast<double>(box.maxGreen) - static_cast<double>(box.minGreen);
+  const double blueRange = static_cast<double>(box.maxBlue) - static_cast<double>(box.minBlue);
+  const double volume = (redRange + 1.0) * (greenRange + 1.0) * (blueRange + 1.0);
+  const double count = static_cast<double>(box.end - box.begin);
+  return volume * count;
+}
+
+std::vector<PaletteColor> buildAdaptivePaletteColors(
+    int width,
+    int height,
+    const std::vector<std::vector<std::uint8_t>>& rgbaFrames,
+    const GifEncoderOptions& options,
+    int targetColorCount) {
+  constexpr std::size_t kMaxPaletteFrames = 12;
+  constexpr std::size_t kMaxPaletteSamples = 65536;
+
+  std::vector<ColorSample> samples;
+  const std::vector<int> frameIndices = buildSampledFrameIndices(rgbaFrames.size(), kMaxPaletteFrames);
+  const std::size_t framesToSample = std::max<std::size_t>(1, frameIndices.size());
+  const std::size_t perFrameBudget = std::max<std::size_t>(1024, kMaxPaletteSamples / framesToSample);
+  const std::size_t pixelCount = static_cast<std::size_t>(width) * static_cast<std::size_t>(height);
+  const std::size_t stride = std::max<std::size_t>(
+      1,
+      static_cast<std::size_t>(std::sqrt(static_cast<double>(std::max<std::size_t>(1, pixelCount / perFrameBudget)))));
+
+  samples.reserve(std::min<std::size_t>(kMaxPaletteSamples, pixelCount * framesToSample));
+
+  for (int frameIndex : frameIndices) {
+    const std::vector<std::uint8_t>& rgbaPixels = rgbaFrames[static_cast<std::size_t>(frameIndex)];
+    for (int y = 0; y < height; y += static_cast<int>(stride)) {
+      for (int x = 0; x < width; x += static_cast<int>(stride)) {
+        const std::size_t pixelIndex =
+            static_cast<std::size_t>(y) * static_cast<std::size_t>(width) + static_cast<std::size_t>(x);
+        const std::size_t pixelOffset = pixelIndex * 4U;
+
+        ColorSample sample{};
+        bool includeSample = false;
+        composePaletteSample(rgbaPixels, pixelOffset, options, sample, includeSample);
+        if (includeSample) {
+          samples.push_back(sample);
+        }
+      }
     }
   }
 
-  if (options.useTransparency) {
-    const int transparentOffset = static_cast<int>(config.transparentIndex) * 3;
-    paletteBytes[transparentOffset + 0] = options.matteRed;
-    paletteBytes[transparentOffset + 1] = options.matteGreen;
-    paletteBytes[transparentOffset + 2] = options.matteBlue;
+  if (samples.empty()) {
+    return {{options.matteRed, options.matteGreen, options.matteBlue}};
   }
+
+  std::vector<ColorBox> boxes;
+  boxes.push_back({0, samples.size()});
+  computeBoxBounds(samples, boxes.front());
+
+  while (static_cast<int>(boxes.size()) < targetColorCount) {
+    auto splitIt = std::max_element(
+        boxes.begin(),
+        boxes.end(),
+        [](const ColorBox& left, const ColorBox& right) {
+          const bool leftSplittable = (left.end - left.begin) > 1;
+          const bool rightSplittable = (right.end - right.begin) > 1;
+          if (leftSplittable != rightSplittable) {
+            return !leftSplittable && rightSplittable;
+          }
+          return boxScore(left) < boxScore(right);
+        });
+
+    if (splitIt == boxes.end() || (splitIt->end - splitIt->begin) <= 1) {
+      break;
+    }
+
+    const int axis = boxLongestAxis(*splitIt);
+    const std::size_t mid = splitIt->begin + (splitIt->end - splitIt->begin) / 2;
+    auto rangeBegin = samples.begin() + static_cast<std::ptrdiff_t>(splitIt->begin);
+    auto rangeMid = samples.begin() + static_cast<std::ptrdiff_t>(mid);
+    auto rangeEnd = samples.begin() + static_cast<std::ptrdiff_t>(splitIt->end);
+
+    auto comparator = [axis](const ColorSample& left, const ColorSample& right) {
+      if (axis == 0) {
+        return left.red < right.red;
+      }
+      if (axis == 1) {
+        return left.green < right.green;
+      }
+      return left.blue < right.blue;
+    };
+    std::nth_element(rangeBegin, rangeMid, rangeEnd, comparator);
+
+    ColorBox newBox{mid, splitIt->end};
+    splitIt->end = mid;
+    computeBoxBounds(samples, *splitIt);
+    computeBoxBounds(samples, newBox);
+    boxes.push_back(newBox);
+  }
+
+  std::vector<PaletteColor> paletteColors;
+  paletteColors.reserve(boxes.size());
+
+  for (ColorBox& box : boxes) {
+    std::uint64_t redSum = 0;
+    std::uint64_t greenSum = 0;
+    std::uint64_t blueSum = 0;
+    const std::size_t count = std::max<std::size_t>(1, box.end - box.begin);
+
+    for (std::size_t index = box.begin; index < box.end; ++index) {
+      redSum += samples[index].red;
+      greenSum += samples[index].green;
+      blueSum += samples[index].blue;
+    }
+
+    paletteColors.push_back({
+        static_cast<std::uint8_t>(redSum / count),
+        static_cast<std::uint8_t>(greenSum / count),
+        static_cast<std::uint8_t>(blueSum / count)});
+  }
+
+  std::sort(
+      paletteColors.begin(),
+      paletteColors.end(),
+      [](const PaletteColor& left, const PaletteColor& right) {
+        const int leftLuma = 30 * left.red + 59 * left.green + 11 * left.blue;
+        const int rightLuma = 30 * right.red + 59 * right.green + 11 * right.blue;
+        return leftLuma < rightLuma;
+      });
+
+  return paletteColors;
+}
+
+int nearestPaletteIndex(float red, float green, float blue, const GifPalette& palette) {
+  int bestIndex = 0;
+  std::uint32_t bestDistance = std::numeric_limits<std::uint32_t>::max();
+
+  for (int index = 0; index < palette.activeColorCount; ++index) {
+    const int paletteOffset = index * 3;
+    const int redDistance = static_cast<int>(std::lround(red)) - static_cast<int>(palette.rgbTable[paletteOffset + 0]);
+    const int greenDistance = static_cast<int>(std::lround(green)) - static_cast<int>(palette.rgbTable[paletteOffset + 1]);
+    const int blueDistance = static_cast<int>(std::lround(blue)) - static_cast<int>(palette.rgbTable[paletteOffset + 2]);
+    const std::uint32_t distance = static_cast<std::uint32_t>(
+        redDistance * redDistance +
+        greenDistance * greenDistance +
+        blueDistance * blueDistance);
+
+    if (distance < bestDistance) {
+      bestDistance = distance;
+      bestIndex = index;
+      if (distance == 0) {
+        break;
+      }
+    }
+  }
+
+  return bestIndex;
+}
+
+PaletteColor paletteColorAt(const GifPalette& palette, int index) {
+  const int clampedIndex = std::clamp(index, 0, palette.activeColorCount - 1);
+  const int paletteOffset = clampedIndex * 3;
+  return {
+      palette.rgbTable[paletteOffset + 0],
+      palette.rgbTable[paletteOffset + 1],
+      palette.rgbTable[paletteOffset + 2]};
 }
 
 void convertPixelsToIndexed(
@@ -331,7 +531,7 @@ void convertPixelsToIndexed(
     int height,
     const std::vector<std::uint8_t>& rgbaPixels,
     const GifEncoderOptions& options,
-    const PaletteConfig& config,
+    const GifPalette& palette,
     std::vector<std::uint8_t>& indexedPixels,
     bool& hasTransparentPixels) {
   indexedPixels.resize(static_cast<std::size_t>(width) * static_cast<std::size_t>(height));
@@ -341,14 +541,16 @@ void convertPixelsToIndexed(
     const float sourceRed = static_cast<float>(rgbaPixels[pixelOffset + 0]);
     const float sourceGreen = static_cast<float>(rgbaPixels[pixelOffset + 1]);
     const float sourceBlue = static_cast<float>(rgbaPixels[pixelOffset + 2]);
-    const std::uint8_t alphaByte = rgbaPixels[pixelOffset + 3];
+    const std::uint8_t sourceAlphaByte = rgbaPixels[pixelOffset + 3];
+    const bool belowTransparencyThreshold = sourceAlphaByte <= options.transparentAlphaThreshold;
 
-    transparent = options.useTransparency && alphaByte <= options.transparentAlphaThreshold;
+    transparent = options.useTransparency && belowTransparencyThreshold;
     if (transparent) {
       red = green = blue = 0.0F;
       return;
     }
 
+    const std::uint8_t alphaByte = belowTransparencyThreshold ? 0 : sourceAlphaByte;
     const float alpha = static_cast<float>(alphaByte) / 255.0F;
     const bool needsMatteComposite = !options.useTransparency || alphaByte < 255;
     if (needsMatteComposite) {
@@ -365,7 +567,8 @@ void convertPixelsToIndexed(
   if (options.ditherMode == GifDitherMode::kNone) {
     for (int y = 0; y < height; ++y) {
       for (int x = 0; x < width; ++x) {
-        const std::size_t pixelIndex = static_cast<std::size_t>(y) * static_cast<std::size_t>(width) + static_cast<std::size_t>(x);
+        const std::size_t pixelIndex =
+            static_cast<std::size_t>(y) * static_cast<std::size_t>(width) + static_cast<std::size_t>(x);
         const std::size_t pixelOffset = pixelIndex * 4U;
 
         float red = 0.0F;
@@ -375,12 +578,12 @@ void convertPixelsToIndexed(
         composePixel(pixelOffset, red, green, blue, transparent);
 
         if (transparent) {
-          indexedPixels[pixelIndex] = config.transparentIndex;
+          indexedPixels[pixelIndex] = palette.transparentIndex;
           hasTransparentPixels = true;
           continue;
         }
 
-        indexedPixels[pixelIndex] = paletteIndexFor(red, green, blue, config);
+        indexedPixels[pixelIndex] = static_cast<std::uint8_t>(nearestPaletteIndex(red, green, blue, palette));
       }
     }
     return;
@@ -391,7 +594,8 @@ void convertPixelsToIndexed(
 
     for (int y = 0; y < height; ++y) {
       for (int x = 0; x < width; ++x) {
-        const std::size_t pixelIndex = static_cast<std::size_t>(y) * static_cast<std::size_t>(width) + static_cast<std::size_t>(x);
+        const std::size_t pixelIndex =
+            static_cast<std::size_t>(y) * static_cast<std::size_t>(width) + static_cast<std::size_t>(x);
         const std::size_t pixelOffset = pixelIndex * 4U;
 
         float red = 0.0F;
@@ -401,7 +605,7 @@ void convertPixelsToIndexed(
         composePixel(pixelOffset, red, green, blue, transparent);
 
         if (transparent) {
-          indexedPixels[pixelIndex] = config.transparentIndex;
+          indexedPixels[pixelIndex] = palette.transparentIndex;
           hasTransparentPixels = true;
           continue;
         }
@@ -410,11 +614,11 @@ void convertPixelsToIndexed(
         const float threshold = (static_cast<float>(kBayer4x4[matrixIndex]) + 0.5F) / 16.0F - 0.5F;
         const float offset = threshold * kOrderedStrength;
 
-        indexedPixels[pixelIndex] = paletteIndexFor(
+        indexedPixels[pixelIndex] = static_cast<std::uint8_t>(nearestPaletteIndex(
             std::clamp(red + offset, 0.0F, 255.0F),
             std::clamp(green + offset, 0.0F, 255.0F),
             std::clamp(blue + offset, 0.0F, 255.0F),
-            config);
+            palette));
       }
     }
     return;
@@ -427,7 +631,8 @@ void convertPixelsToIndexed(
     std::fill(nextErrorRow.begin(), nextErrorRow.end(), 0.0F);
 
     for (int x = 0; x < width; ++x) {
-      const std::size_t pixelIndex = static_cast<std::size_t>(y) * static_cast<std::size_t>(width) + static_cast<std::size_t>(x);
+      const std::size_t pixelIndex =
+          static_cast<std::size_t>(y) * static_cast<std::size_t>(width) + static_cast<std::size_t>(x);
       const std::size_t pixelOffset = pixelIndex * 4U;
 
       float red = 0.0F;
@@ -437,7 +642,7 @@ void convertPixelsToIndexed(
       composePixel(pixelOffset, red, green, blue, transparent);
 
       if (transparent) {
-        indexedPixels[pixelIndex] = config.transparentIndex;
+        indexedPixels[pixelIndex] = palette.transparentIndex;
         hasTransparentPixels = true;
         continue;
       }
@@ -447,10 +652,10 @@ void convertPixelsToIndexed(
       const float correctedGreen = std::clamp(green + currentErrorRow[errorIndex + 1], 0.0F, 255.0F);
       const float correctedBlue = std::clamp(blue + currentErrorRow[errorIndex + 2], 0.0F, 255.0F);
 
-      const std::uint8_t paletteIndex = paletteIndexFor(correctedRed, correctedGreen, correctedBlue, config);
-      indexedPixels[pixelIndex] = paletteIndex;
+      const int paletteIndex = nearestPaletteIndex(correctedRed, correctedGreen, correctedBlue, palette);
+      indexedPixels[pixelIndex] = static_cast<std::uint8_t>(paletteIndex);
 
-      const PaletteColor quantized = paletteColorFor(paletteIndex, config);
+      const PaletteColor quantized = paletteColorAt(palette, paletteIndex);
       const float redError = correctedRed - static_cast<float>(quantized.red);
       const float greenError = correctedGreen - static_cast<float>(quantized.green);
       const float blueError = correctedBlue - static_cast<float>(quantized.blue);
@@ -486,7 +691,8 @@ DiffRect findChangedRect(
 
   for (int y = 0; y < height; ++y) {
     for (int x = 0; x < width; ++x) {
-      const std::size_t pixelIndex = static_cast<std::size_t>(y) * static_cast<std::size_t>(width) + static_cast<std::size_t>(x);
+      const std::size_t pixelIndex =
+          static_cast<std::size_t>(y) * static_cast<std::size_t>(width) + static_cast<std::size_t>(x);
       if (currentPixels[pixelIndex] == previousPixels[pixelIndex]) {
         continue;
       }
@@ -524,8 +730,10 @@ void extractSubrectIndices(
   subrectPixels.resize(static_cast<std::size_t>(rect.width()) * static_cast<std::size_t>(rect.height()));
 
   for (int y = rect.top; y < rect.bottom; ++y) {
-    const std::size_t srcOffset = static_cast<std::size_t>(y) * static_cast<std::size_t>(fullWidth) + static_cast<std::size_t>(rect.left);
-    const std::size_t dstOffset = static_cast<std::size_t>(y - rect.top) * static_cast<std::size_t>(rect.width());
+    const std::size_t srcOffset =
+        static_cast<std::size_t>(y) * static_cast<std::size_t>(fullWidth) + static_cast<std::size_t>(rect.left);
+    const std::size_t dstOffset =
+        static_cast<std::size_t>(y - rect.top) * static_cast<std::size_t>(rect.width());
     std::copy_n(
         fullFrame.begin() + static_cast<std::ptrdiff_t>(srcOffset),
         rect.width(),
@@ -535,11 +743,79 @@ void extractSubrectIndices(
 
 } // namespace
 
-bool QuantizeGifFrame(
+bool BuildAdaptiveGifPalette(
+    int width,
+    int height,
+    const std::vector<std::vector<std::uint8_t>>& rgbaFrames,
+    const GifEncoderOptions& options,
+    GifPalette& palette,
+    std::string& error) {
+  error.clear();
+
+  if (width <= 0 || height <= 0) {
+    error = "GIF export requires a positive image size.";
+    return false;
+  }
+  if (rgbaFrames.empty()) {
+    error = "GIF export requires at least one frame.";
+    return false;
+  }
+
+  const std::size_t expectedPixelBytes =
+      static_cast<std::size_t>(width) * static_cast<std::size_t>(height) * 4U;
+  for (const std::vector<std::uint8_t>& frame : rgbaFrames) {
+    if (frame.size() != expectedPixelBytes) {
+      error = "GIF encoder received an unexpected RGBA buffer size while building the palette.";
+      return false;
+    }
+  }
+
+  palette.tableSize = sanitizeMaxColors(options.maxColors);
+  palette.transparentIndex = static_cast<std::uint8_t>(palette.tableSize - 1);
+  palette.minimumCodeSize = paletteMinimumCodeSize(palette.tableSize);
+  palette.packedField = static_cast<std::uint8_t>(0x80 | 0x70 | paletteSizeCode(palette.tableSize));
+
+  const int targetColorCount = options.useTransparency ? (palette.tableSize - 1) : palette.tableSize;
+  std::vector<PaletteColor> paletteColors =
+      buildAdaptivePaletteColors(width, height, rgbaFrames, options, targetColorCount);
+  if (paletteColors.empty()) {
+    paletteColors.push_back({options.matteRed, options.matteGreen, options.matteBlue});
+  }
+
+  palette.activeColorCount = std::min<int>(static_cast<int>(paletteColors.size()), targetColorCount);
+  palette.rgbTable.assign(static_cast<std::size_t>(palette.tableSize) * 3U, 0);
+
+  for (int index = 0; index < palette.activeColorCount; ++index) {
+    const int paletteOffset = index * 3;
+    palette.rgbTable[paletteOffset + 0] = paletteColors[static_cast<std::size_t>(index)].red;
+    palette.rgbTable[paletteOffset + 1] = paletteColors[static_cast<std::size_t>(index)].green;
+    palette.rgbTable[paletteOffset + 2] = paletteColors[static_cast<std::size_t>(index)].blue;
+  }
+
+  const PaletteColor filler = paletteColors[static_cast<std::size_t>(palette.activeColorCount - 1)];
+  for (int index = palette.activeColorCount; index < palette.tableSize; ++index) {
+    const int paletteOffset = index * 3;
+    palette.rgbTable[paletteOffset + 0] = filler.red;
+    palette.rgbTable[paletteOffset + 1] = filler.green;
+    palette.rgbTable[paletteOffset + 2] = filler.blue;
+  }
+
+  if (options.useTransparency) {
+    const int transparentOffset = static_cast<int>(palette.transparentIndex) * 3;
+    palette.rgbTable[transparentOffset + 0] = options.matteRed;
+    palette.rgbTable[transparentOffset + 1] = options.matteGreen;
+    palette.rgbTable[transparentOffset + 2] = options.matteBlue;
+  }
+
+  return true;
+}
+
+bool QuantizeGifFrameToPalette(
     int width,
     int height,
     const std::vector<std::uint8_t>& rgbaPixels,
     const GifEncoderOptions& options,
+    const GifPalette& palette,
     GifIndexedFrame& indexedFrame,
     std::string& error) {
   error.clear();
@@ -555,9 +831,12 @@ bool QuantizeGifFrame(
     error = "GIF encoder received an unexpected RGBA buffer size.";
     return false;
   }
+  if (palette.rgbTable.empty() || palette.activeColorCount <= 0) {
+    error = "GIF encoder requires a valid palette before quantization.";
+    return false;
+  }
 
-  const PaletteConfig config = makePaletteConfig(options);
-  convertPixelsToIndexed(width, height, rgbaPixels, options, config, indexedFrame.pixels, indexedFrame.hasTransparentPixels);
+  convertPixelsToIndexed(width, height, rgbaPixels, options, palette, indexedFrame.pixels, indexedFrame.hasTransparentPixels);
   return true;
 }
 
@@ -571,17 +850,23 @@ bool EncodeSingleFrameGif(
   gifBytes.clear();
   error.clear();
 
-  GifIndexedFrame indexedFrame;
-  if (!QuantizeGifFrame(width, height, rgbaPixels, options, indexedFrame, error)) {
+  GifPalette palette;
+  std::vector<std::vector<std::uint8_t>> frames{rgbaPixels};
+  if (!BuildAdaptiveGifPalette(width, height, frames, options, palette, error)) {
     return false;
   }
 
-  if (!EncodeGifAnimationHeader(width, height, options, gifBytes, error)) {
+  GifIndexedFrame indexedFrame;
+  if (!QuantizeGifFrameToPalette(width, height, rgbaPixels, options, palette, indexedFrame, error)) {
+    return false;
+  }
+
+  if (!EncodeGifAnimationHeader(width, height, options, palette, gifBytes, error)) {
     return false;
   }
 
   std::vector<std::uint8_t> frameBytes;
-  if (!EncodeGifAnimationFrame(width, height, indexedFrame, nullptr, options, false, frameBytes, error)) {
+  if (!EncodeGifAnimationFrame(width, height, indexedFrame, nullptr, options, palette, false, frameBytes, error)) {
     return false;
   }
 
@@ -594,6 +879,7 @@ bool EncodeGifAnimationHeader(
     int width,
     int height,
     const GifEncoderOptions& options,
+    const GifPalette& palette,
     std::vector<std::uint8_t>& gifBytes,
     std::string& error) {
   gifBytes.clear();
@@ -603,21 +889,21 @@ bool EncodeGifAnimationHeader(
     error = "GIF export requires a positive image size.";
     return false;
   }
+  if (palette.rgbTable.size() != static_cast<std::size_t>(palette.tableSize) * 3U) {
+    error = "GIF encoder received an invalid global palette.";
+    return false;
+  }
 
-  const PaletteConfig config = makePaletteConfig(options);
-  std::vector<std::uint8_t> paletteBytes;
-  buildGlobalPalette(paletteBytes, options, config);
-
-  gifBytes.reserve(13 + paletteBytes.size() + 32);
+  gifBytes.reserve(13 + palette.rgbTable.size() + 32);
   gifBytes.insert(gifBytes.end(), {'G', 'I', 'F', '8', '9', 'a'});
 
   appendU16LE(gifBytes, width);
   appendU16LE(gifBytes, height);
-  gifBytes.push_back(config.packedField);
-  gifBytes.push_back(options.useTransparency ? config.transparentIndex : 0x00);
+  gifBytes.push_back(palette.packedField);
+  gifBytes.push_back(options.useTransparency ? palette.transparentIndex : 0x00);
   gifBytes.push_back(0x00);
 
-  gifBytes.insert(gifBytes.end(), paletteBytes.begin(), paletteBytes.end());
+  gifBytes.insert(gifBytes.end(), palette.rgbTable.begin(), palette.rgbTable.end());
   appendApplicationLoopExtension(gifBytes, options);
 
   return true;
@@ -629,6 +915,7 @@ bool EncodeGifAnimationFrame(
     const GifIndexedFrame& frame,
     const GifIndexedFrame* previousFrame,
     const GifEncoderOptions& options,
+    const GifPalette& palette,
     bool allowFrameDifferencing,
     std::vector<std::uint8_t>& gifBytes,
     std::string& error) {
@@ -646,13 +933,10 @@ bool EncodeGifAnimationFrame(
     error = "GIF encoder received an unexpected indexed frame size.";
     return false;
   }
-
   if (previousFrame && previousFrame->pixels.size() != expectedPixelCount) {
     error = "GIF encoder received an unexpected previous indexed frame size.";
     return false;
   }
-
-  const PaletteConfig config = makePaletteConfig(options);
 
   const bool safeToDifference =
       allowFrameDifferencing &&
@@ -677,13 +961,13 @@ bool EncodeGifAnimationFrame(
     disposalMethod = options.useTransparency && frame.hasTransparentPixels ? 2 : 0;
   }
 
-  const std::vector<std::uint8_t> compressedBytes = encodeLzwIndices(encodedPixels, config.minimumCodeSize);
+  const std::vector<std::uint8_t> compressedBytes = encodeLzwIndices(encodedPixels, palette.minimumCodeSize);
   gifBytes.reserve(compressedBytes.size() + 32);
 
   appendGraphicControlExtension(
       gifBytes,
       options.useTransparency && frame.hasTransparentPixels && !safeToDifference,
-      config.transparentIndex,
+      palette.transparentIndex,
       options.frameDelayCentiseconds,
       disposalMethod);
 
@@ -694,7 +978,7 @@ bool EncodeGifAnimationFrame(
   appendU16LE(gifBytes, rect.height());
   gifBytes.push_back(0x00);
 
-  gifBytes.push_back(static_cast<std::uint8_t>(config.minimumCodeSize));
+  gifBytes.push_back(static_cast<std::uint8_t>(palette.minimumCodeSize));
   appendImageDataBlocks(gifBytes, compressedBytes);
 
   return true;

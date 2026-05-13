@@ -29,18 +29,36 @@ struct GifEncoderOptions {
   std::uint8_t matteRed = 0;
   std::uint8_t matteGreen = 0;
   std::uint8_t matteBlue = 0;
-  std::uint8_t transparentAlphaThreshold = 127;
+  std::uint8_t transparentAlphaThreshold = 20;
   GifLoopMode loopMode = GifLoopMode::kInfinite;
   int loopCount = 0;
   int frameDelayCentiseconds = 4;
   int maxColors = 256;
 };
 
-bool QuantizeGifFrame(
+struct GifPalette {
+  std::vector<std::uint8_t> rgbTable;
+  int tableSize = 256;
+  int activeColorCount = 256;
+  std::uint8_t transparentIndex = 255;
+  int minimumCodeSize = 8;
+  std::uint8_t packedField = 0xf7;
+};
+
+bool BuildAdaptiveGifPalette(
+    int width,
+    int height,
+    const std::vector<std::vector<std::uint8_t>>& rgbaFrames,
+    const GifEncoderOptions& options,
+    GifPalette& palette,
+    std::string& error);
+
+bool QuantizeGifFrameToPalette(
     int width,
     int height,
     const std::vector<std::uint8_t>& rgbaPixels,
     const GifEncoderOptions& options,
+    const GifPalette& palette,
     GifIndexedFrame& indexedFrame,
     std::string& error);
 
@@ -48,6 +66,7 @@ bool EncodeGifAnimationHeader(
     int width,
     int height,
     const GifEncoderOptions& options,
+    const GifPalette& palette,
     std::vector<std::uint8_t>& gifBytes,
     std::string& error);
 
@@ -57,6 +76,7 @@ bool EncodeGifAnimationFrame(
     const GifIndexedFrame& frame,
     const GifIndexedFrame* previousFrame,
     const GifEncoderOptions& options,
+    const GifPalette& palette,
     bool allowFrameDifferencing,
     std::vector<std::uint8_t>& gifBytes,
     std::string& error);

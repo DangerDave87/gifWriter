@@ -1,7 +1,6 @@
 #pragma once
 
 #include <cstdint>
-#include <string>
 #include <vector>
 
 #include "DDImage/FileWriter.h"
@@ -47,8 +46,6 @@ private:
   bool hasOutputAlphaChannel() const;
   bool hasSourceAlphaChannel() const;
   bool readCurrentFrameRGBA(std::vector<std::uint8_t>& rgbaPixels, std::string& error);
-  std::string diagnosticsLogPath() const;
-  void logDiagnostics(const char* event, const char* detail = nullptr) const;
   void resetExecutionState();
   void updateKnobVisibility();
 
@@ -56,21 +53,12 @@ private:
   int loopCount_;
   int ditherMode_;
   int maxColorsMode_;
-  bool transparency_;
+  float transparencyThreshold_;
   float matteColor_[3];
   double fps_;
-  bool diagnosticsEnabled_;
 
-  mutable int movieQueryCount_;
-  int executeCallCount_;
-  int finishCallCount_;
-  int receivedFrameCount_;
   bool fileOpen_;
-  bool headerWritten_;
-  int encodedFrameCount_;
-  bool hasPreviousFrame_;
-  bool previousFrameHasTransparency_;
-  std::vector<std::uint8_t> previousIndexedPixels_;
+  std::vector<std::vector<std::uint8_t>> bufferedRgbaFrames_;
 };
 
 } // namespace GifExporter

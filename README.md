@@ -4,39 +4,42 @@ This repository contains a native NDK-based GIF writer plug-in for Nuke.
 
 ## Current status
 
-Phase 0, Phase 1, Phase 2, Phase 3, and a first Phase 5 animation path are now in place:
+The plug-in now provides a native animated GIF writer for Nuke with:
 
 - CMake-based project layout
 - native `gifWriter` shared-library target
 - `DD::Image::FileWriter`-based writer registration for `.gif`
 - GIF export settings UI
-- movie-writer lifecycle skeleton for animated output
-- Phase 2 diagnostics logging
-- real still-frame GIF encoding
-- animated GIF streaming across `execute()` / `finish()`
+- real still-frame and animated GIF encoding
+- whole-sequence buffering for shared animation palette generation
+- adaptive global palette generation from sampled frames
+- spec-correct GIF LZW compression
 - palette-size control
 - automatic frame differencing for smaller opaque animations
+- loop control, channel-driven transparency, matte color, fps, and dither options
 
-The current implementation now behaves like a movie writer:
+The writer behaves like a movie writer:
 
 - `movie()` always returns `true`
-- the output file is opened lazily on the first `execute()`
 - `execute()` is called once per input frame
-- `finish()` closes and resets the writer state once at the end
+- source frames are buffered during `execute()`
+- the final GIF is encoded and written in `finish()`
 
-The plug-in now exports real GIF image data:
+The export pipeline currently does the following:
 
 - RGBA is read back from Nuke rows
 - output conversion uses the writer LUT path via `to_byte()`
-- pixels are quantized into a fixed indexed palette
+- a shared adaptive palette is built from sampled animation frames
+- pixels are quantized into that shared indexed palette
+- GIF image data is compressed with a dictionary-based LZW encoder
 - the `max colors` knob reduces the effective palette size
 - optional dithering, transparency thresholding, and matte flattening are applied
-- animated GIFs are written as one file across repeated `execute()` calls
+- Write `channels=rgba` produces transparent GIF output, while `channels=rgb` flattens to the selected matte color
 - looping is controlled by the loop mode / loop count knobs
 - frame timing is derived from the `fps` knob
 - opaque animations automatically crop frames to changed regions to reduce file size
 
-The current animated implementation uses a fixed global palette family and conservative frame differencing. For reliability, transparent animations may still fall back to full-frame updates when cropped transparency would be ambiguous.
+The current implementation is now producing competitive results against the project reference exports for the tested sequence. Transparent animations still use conservative frame handling, so there is still room for additional size reductions on more difficult shots.
 
 ## Expected output binary
 
@@ -162,26 +165,11 @@ On startup, Nuke should discover `gifWriter`, and `.gif` should become available
 - [src/GifWriter.cpp](/D:/002_Projekt/NukePlugins/GifExporter/src/GifWriter.cpp)
 - [docs/gif_writer_plan.md](/D:/002_Projekt/NukePlugins/GifExporter/docs/gif_writer_plan.md)
 
-## Phase 2 result
-
-The Phase 2 Nuke execution test established the following:
-
-- `movie() == false` cannot render a multi-frame GIF sequence in Nuke
-- animated GIF export must behave as a movie writer
-- Nuke calls `execute()` once per frame
-- Nuke calls `finish()` once after the frame range completes
-- the output filename remains constant across the sequence
-
-The plug-in keeps an optional `diagnostics` checkbox for this lifecycle logging.
-When enabled, it appends events to:
-
-- `<output gif path>.gifwriter-phase2.log`
-
 ## Next step
 
-The next implementation work is quality and hardening:
+The next implementation work is hardening and broader coverage:
 
-- improve palette quality beyond the current fixed color cube
 - reduce animated GIF file size further with smarter transparency-aware frame differencing
 - harden loop-count semantics and viewer compatibility edge cases
-- expand diagnostics and compatibility testing across common GIF viewers
+- test across a wider set of transparency-heavy and gradient-heavy sequences
+- package and verify the writer across the supported Nuke versions

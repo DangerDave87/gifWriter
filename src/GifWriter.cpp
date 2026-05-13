@@ -3,15 +3,13 @@
 
 #include <algorithm>
 #include <cstdint>
-#include <fstream>
-#include <sstream>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "DDImage/Channel.h"
 #include "DDImage/Knobs.h"
 #include "DDImage/LUT.h"
-#include "DDImage/OutputContext.h"
 #include "DDImage/Row.h"
 #include "DDImage/Write.h"
 
@@ -53,6 +51,32 @@ int selectedMaxColors(int mode) {
   }
 }
 
+GifEncoderOptions makeEncoderOptions(
+    bool alphaAvailable,
+    int loopMode,
+    int loopCount,
+    int ditherMode,
+    int maxColorsMode,
+    float transparencyThreshold,
+    const float matteColor[3],
+    double fps) {
+  GifEncoderOptions options;
+  options.useTransparency = alphaAvailable;
+  options.ditherMode = static_cast<GifDitherMode>(ditherMode);
+  options.transparentAlphaThreshold =
+      static_cast<std::uint8_t>(std::clamp(transparencyThreshold, 0.0F, 1.0F) * 255.0F + 0.5F);
+  options.matteRed = static_cast<std::uint8_t>(std::clamp(matteColor[0], 0.0F, 1.0F) * 255.0F + 0.5F);
+  options.matteGreen = static_cast<std::uint8_t>(std::clamp(matteColor[1], 0.0F, 1.0F) * 255.0F + 0.5F);
+  options.matteBlue = static_cast<std::uint8_t>(std::clamp(matteColor[2], 0.0F, 1.0F) * 255.0F + 0.5F);
+  options.loopMode = loopMode == GifWriter::kLoopFixed
+      ? GifLoopMode::kFixed
+      : (loopMode == GifWriter::kLoopNone ? GifLoopMode::kNone : GifLoopMode::kInfinite);
+  options.loopCount = loopCount;
+  options.frameDelayCentiseconds = std::max(1, static_cast<int>(std::lround(100.0 / fps)));
+  options.maxColors = selectedMaxColors(maxColorsMode);
+  return options;
+}
+
 } // namespace
 
 using namespace DD::Image;
@@ -72,154 +96,150 @@ GifWriter::GifWriter(Write* writeNode)
       loopCount_(1),
       ditherMode_(kDitherFloydSteinberg),
       maxColorsMode_(0),
-      transparency_(true),
+      transparencyThreshold_(20.0F / 255.0F),
       matteColor_{0.0F, 0.0F, 0.0F},
       fps_(24.0),
-      diagnosticsEnabled_(false),
-      movieQueryCount_(0),
-      executeCallCount_(0),
-      finishCallCount_(0),
-      receivedFrameCount_(0),
-      fileOpen_(false),
-      headerWritten_(false),
-      encodedFrameCount_(0),
-      hasPreviousFrame_(false),
-      previousFrameHasTransparency_(false) {
+      fileOpen_(false) {
   if (root_real_fps) {
     fps_ = root_real_fps();
   }
 }
 
 void GifWriter::execute() {
-  ++executeCallCount_;
-  ++receivedFrameCount_;
-  logDiagnostics("execute.begin");
-
-  if (!fileOpen_) {
-    if (!open()) {
-      logDiagnostics("execute.open_failed");
-      return;
-    }
-
-    fileOpen_ = true;
-    logDiagnostics("execute.open_ok");
-  }
-
   std::vector<std::uint8_t> rgbaPixels;
   std::string error;
   if (!readCurrentFrameRGBA(rgbaPixels, error)) {
     iop->critical("%s", error.c_str());
-    logDiagnostics("execute.read_failed", error.c_str());
-    close();
     resetExecutionState();
     return;
   }
 
-  const bool alphaAvailable = hasOutputAlphaChannel();
-
-  GifEncoderOptions options;
-  options.useTransparency = transparency_ && alphaAvailable;
-  options.ditherMode = static_cast<GifDitherMode>(ditherMode_);
-  options.matteRed = static_cast<std::uint8_t>(std::clamp(matteColor_[0], 0.0F, 1.0F) * 255.0F + 0.5F);
-  options.matteGreen = static_cast<std::uint8_t>(std::clamp(matteColor_[1], 0.0F, 1.0F) * 255.0F + 0.5F);
-  options.matteBlue = static_cast<std::uint8_t>(std::clamp(matteColor_[2], 0.0F, 1.0F) * 255.0F + 0.5F);
-  options.loopMode = loopMode_ == kLoopFixed
-      ? GifLoopMode::kFixed
-      : (loopMode_ == kLoopNone ? GifLoopMode::kNone : GifLoopMode::kInfinite);
-  options.loopCount = loopCount_;
-  options.frameDelayCentiseconds = std::max(1, static_cast<int>(std::lround(100.0 / fps_)));
-  options.maxColors = selectedMaxColors(maxColorsMode_);
-
-  GifIndexedFrame indexedFrame;
-  if (!QuantizeGifFrame(width(), height(), rgbaPixels, options, indexedFrame, error)) {
-    iop->critical("%s", error.c_str());
-    logDiagnostics("execute.quantize_failed", error.c_str());
-    close();
-    resetExecutionState();
-    return;
-  }
-
-  if (!headerWritten_) {
-    std::vector<std::uint8_t> headerBytes;
-    if (!EncodeGifAnimationHeader(width(), height(), options, headerBytes, error)) {
-      iop->critical("%s", error.c_str());
-      logDiagnostics("execute.header_failed", error.c_str());
-      close();
-      resetExecutionState();
-      return;
-    }
-
-    if (!write(headerBytes.data(), static_cast<FILE_OFFSET>(headerBytes.size()))) {
-      iop->critical("Failed to write GIF animation header.");
-      logDiagnostics("execute.header_write_failed");
-      close();
-      resetExecutionState();
-      return;
-    }
-
-    headerWritten_ = true;
-    logDiagnostics("execute.header_ok");
-  }
-
-  GifIndexedFrame previousFrame;
-  const GifIndexedFrame* previousFramePtr = nullptr;
-  if (hasPreviousFrame_) {
-    previousFrame.pixels = previousIndexedPixels_;
-    previousFrame.hasTransparentPixels = previousFrameHasTransparency_;
-    previousFramePtr = &previousFrame;
-  }
-
-  std::vector<std::uint8_t> frameBytes;
-  if (!EncodeGifAnimationFrame(width(), height(), indexedFrame, previousFramePtr, options, true, frameBytes, error)) {
-    iop->critical("%s", error.c_str());
-    logDiagnostics("execute.encode_failed", error.c_str());
-    close();
-    resetExecutionState();
-    return;
-  }
-
-  if (!write(frameBytes.data(), static_cast<FILE_OFFSET>(frameBytes.size()))) {
-    iop->critical("Failed to write GIF frame data.");
-    logDiagnostics("execute.write_failed");
-    close();
-    resetExecutionState();
-    return;
-  }
-
-  previousIndexedPixels_ = indexedFrame.pixels;
-  previousFrameHasTransparency_ = indexedFrame.hasTransparentPixels;
-  hasPreviousFrame_ = true;
-  ++encodedFrameCount_;
-  logDiagnostics("execute.write_ok", "frame_written");
-  logDiagnostics("execute.end");
+  bufferedRgbaFrames_.push_back(std::move(rgbaPixels));
 }
 
 bool GifWriter::movie() const {
-  ++movieQueryCount_;
-  logDiagnostics("movie.query");
   return true;
 }
 
 void GifWriter::finish() {
-  ++finishCallCount_;
-  logDiagnostics("finish");
-
-  if (fileOpen_) {
-    if (headerWritten_ && encodedFrameCount_ > 0) {
-      std::vector<std::uint8_t> trailerBytes;
-      EncodeGifAnimationTrailer(trailerBytes);
-      if (!write(trailerBytes.data(), static_cast<FILE_OFFSET>(trailerBytes.size()))) {
-        iop->critical("Failed to finalize the GIF animation.");
-        logDiagnostics("finish.trailer_write_failed");
-      } else {
-        logDiagnostics("finish.trailer_ok");
-      }
-    }
-
-    close();
-    logDiagnostics("finish.close_ok");
+  if (bufferedRgbaFrames_.empty()) {
+    resetExecutionState();
+    return;
   }
 
+  const int imageWidth = width();
+  const int imageHeight = height();
+  const bool alphaAvailable = hasOutputAlphaChannel();
+  const GifEncoderOptions options = makeEncoderOptions(
+      alphaAvailable,
+      loopMode_,
+      loopCount_,
+      ditherMode_,
+      maxColorsMode_,
+      transparencyThreshold_,
+      matteColor_,
+      fps_);
+
+  std::string error;
+  GifPalette palette;
+  if (!BuildAdaptiveGifPalette(imageWidth, imageHeight, bufferedRgbaFrames_, options, palette, error)) {
+    iop->critical("%s", error.c_str());
+    resetExecutionState();
+    return;
+  }
+
+  if (!open()) {
+    iop->critical("Failed to open the GIF output file.");
+    resetExecutionState();
+    return;
+  }
+  fileOpen_ = true;
+
+  std::vector<std::uint8_t> bytes;
+  if (!EncodeGifAnimationHeader(imageWidth, imageHeight, options, palette, bytes, error)) {
+    iop->critical("%s", error.c_str());
+    close();
+    resetExecutionState();
+    return;
+  }
+
+  if (!write(bytes.data(), static_cast<FILE_OFFSET>(bytes.size()))) {
+    iop->critical("Failed to write GIF animation header.");
+    close();
+    resetExecutionState();
+    return;
+  }
+
+  GifIndexedFrame previousFrame;
+  bool hasPreviousFrame = false;
+  const int frameCount = static_cast<int>(bufferedRgbaFrames_.size());
+
+  for (int frameIndex = 0; frameIndex < frameCount; ++frameIndex) {
+    if (aborted()) {
+      iop->critical("GIF export was aborted.");
+      close();
+      resetExecutionState();
+      return;
+    }
+
+    progressFraction(frameIndex, std::max(1, frameCount));
+
+    GifIndexedFrame indexedFrame;
+    if (!QuantizeGifFrameToPalette(
+            imageWidth,
+            imageHeight,
+            bufferedRgbaFrames_[static_cast<std::size_t>(frameIndex)],
+            options,
+            palette,
+            indexedFrame,
+            error)) {
+      iop->critical("%s", error.c_str());
+      close();
+      resetExecutionState();
+      return;
+    }
+
+    bytes.clear();
+    const GifIndexedFrame* previousFramePtr = hasPreviousFrame ? &previousFrame : nullptr;
+    if (!EncodeGifAnimationFrame(
+            imageWidth,
+            imageHeight,
+            indexedFrame,
+            previousFramePtr,
+            options,
+            palette,
+            true,
+            bytes,
+            error)) {
+      iop->critical("%s", error.c_str());
+      close();
+      resetExecutionState();
+      return;
+    }
+
+    if (!write(bytes.data(), static_cast<FILE_OFFSET>(bytes.size()))) {
+      iop->critical("Failed to write GIF frame data.");
+      close();
+      resetExecutionState();
+      return;
+    }
+
+    previousFrame = std::move(indexedFrame);
+    hasPreviousFrame = true;
+  }
+
+  progressFraction(1.0);
+
+  bytes.clear();
+  EncodeGifAnimationTrailer(bytes);
+  if (!write(bytes.data(), static_cast<FILE_OFFSET>(bytes.size()))) {
+    iop->critical("Failed to finalize the GIF animation.");
+    close();
+    resetExecutionState();
+    return;
+  }
+
+  close();
   resetExecutionState();
 }
 
@@ -235,9 +255,8 @@ void GifWriter::knobs(Knob_Callback callback) {
   ClearFlags(callback, Knob::STARTLINE);
   SetFlags(callback, Knob::ENDLINE);
 
-  Bool_knob(callback, &transparency_, "transparency", "transparency");
-  SetFlags(callback, Knob::STARTLINE);
-  Tooltip(callback, "Preserve transparency in the exported GIF when possible.");
+  Float_knob(callback, &transparencyThreshold_, IRange(0.0, 1.0, true), "transparency_threshold", "threshold");
+  Tooltip(callback, "Alpha values at or below this threshold are treated as fully transparent for rgba output or fully matte for rgb output.");
 
   Enumeration_knob(callback, &ditherMode_, kDitherModeLabels, "dither", "dither");
   Tooltip(callback, "Controls how palette quantization dithering is applied.");
@@ -252,13 +271,12 @@ void GifWriter::knobs(Knob_Callback callback) {
   ClearFlags(callback, Knob::SLIDER);
   Tooltip(callback, "Defaults to the current Nuke project frame rate.");
 
-  Bool_knob(callback, &diagnosticsEnabled_, "diagnostics", "diagnostics");
-  Tooltip(callback, "Write a sidecar log next to the output GIF recording movie(), execute(), and finish() calls.");
-
   updateKnobVisibility();
 }
 
 int GifWriter::knob_changed(Knob* knob) {
+  Writer::knob_changed(knob);
+
   if (loopCount_ < 1) {
     loopCount_ = 1;
   }
@@ -275,11 +293,9 @@ int GifWriter::knob_changed(Knob* knob) {
     fps_ = root_real_fps ? root_real_fps() : 24.0;
   }
 
-  updateKnobVisibility();
+  transparencyThreshold_ = std::clamp(transparencyThreshold_, 0.0F, 1.0F);
 
-  if (knob == iop->knob("diagnostics")) {
-    logDiagnostics("knob_changed");
-  }
+  updateKnobVisibility();
 
   return 1;
 }
@@ -289,13 +305,7 @@ LUT* GifWriter::defaultLUT() const {
 }
 
 bool GifWriter::hasOutputAlphaChannel() const {
-  const int channelCount = iop->depth();
-  for (int channelIndex = 0; channelIndex < channelCount; ++channelIndex) {
-    if (iop->channel_written_to(channelIndex) == Chan_Alpha) {
-      return true;
-    }
-  }
-  return false;
+  return iop->channels().contains(Mask_Alpha);
 }
 
 bool GifWriter::hasSourceAlphaChannel() const {
@@ -342,7 +352,12 @@ bool GifWriter::readCurrentFrameRGBA(std::vector<std::uint8_t>& rgbaPixels, std:
     to_byte(2, blueRow.data(), row[Chan_Blue], alphaInput, imageWidth);
 
     if (sourceAlphaAvailable) {
-      to_byte(3, alphaRow.data(), row[Chan_Alpha], nullptr, imageWidth);
+      const float* sourceAlpha = row[Chan_Alpha];
+      for (int x = 0; x < imageWidth; ++x) {
+        const float alpha = sourceAlpha ? std::clamp(sourceAlpha[x], 0.0F, 1.0F) : 1.0F;
+        alphaRow[static_cast<std::size_t>(x)] =
+            static_cast<std::uint8_t>(alpha * 255.0F + 0.5F);
+      }
     } else {
       std::fill(alphaRow.begin(), alphaRow.end(), static_cast<std::uint8_t>(255));
     }
@@ -364,80 +379,26 @@ bool GifWriter::readCurrentFrameRGBA(std::vector<std::uint8_t>& rgbaPixels, std:
 void GifWriter::updateKnobVisibility() {
   Knob* loopCountKnob = iop->knob("loop_count");
   if (loopCountKnob) {
-    loopCountKnob->visible(loopMode_ == kLoopFixed);
+    const bool shouldBeVisible = loopMode_ == kLoopFixed;
+    if (loopCountKnob->isVisible() != shouldBeVisible) {
+      loopCountKnob->visible(shouldBeVisible);
+      loopCountKnob->updateWidgets();
+    }
   }
 
   Knob* loopCountSuffixKnob = iop->knob("loop_count_suffix");
   if (loopCountSuffixKnob) {
-    loopCountSuffixKnob->visible(loopMode_ == kLoopFixed);
-  }
-
-  Knob* transparencyKnob = iop->knob("transparency");
-  if (transparencyKnob) {
-    transparencyKnob->enable(hasOutputAlphaChannel());
-  }
-}
-
-std::string GifWriter::diagnosticsLogPath() const {
-  return std::string(filename()) + ".gifwriter-phase2.log";
-}
-
-void GifWriter::logDiagnostics(const char* event, const char* detail) const {
-  if (!diagnosticsEnabled_) {
-    return;
-  }
-
-  std::ofstream stream(diagnosticsLogPath().c_str(), std::ios::app);
-  if (!stream) {
-    return;
-  }
-
-  const OutputContext& outputContext = iop->outputContext();
-
-  std::ostringstream views;
-  bool first = true;
-  for (int view : executingViews()) {
-    if (!first) {
-      views << ",";
+    const bool shouldBeVisible = loopMode_ == kLoopFixed;
+    if (loopCountSuffixKnob->isVisible() != shouldBeVisible) {
+      loopCountSuffixKnob->visible(shouldBeVisible);
+      loopCountSuffixKnob->updateWidgets();
     }
-    views << view;
-    first = false;
   }
-
-  stream
-      << "event=" << event
-      << " writer_mode=movie"
-      << " movie=true"
-      << " movie_queries=" << movieQueryCount_
-      << " execute_calls=" << executeCallCount_
-      << " finish_calls=" << finishCallCount_
-      << " received_frames=" << receivedFrameCount_
-      << " file_open=" << (fileOpen_ ? "true" : "false")
-      << " header_written=" << (headerWritten_ ? "true" : "false")
-      << " encoded_frames=" << encodedFrameCount_
-      << " frame=" << outputContext.frame()
-      << " filename=\"" << filename() << "\""
-      << " views=" << views.str()
-      << " aborted=" << (aborted() ? "true" : "false");
-
-  if (detail && *detail) {
-    stream << " detail=\"" << detail << "\"";
-  }
-
-  stream << "\n";
 }
 
 void GifWriter::resetExecutionState() {
-  movieQueryCount_ = 0;
-  executeCallCount_ = 0;
-  finishCallCount_ = 0;
-  receivedFrameCount_ = 0;
   fileOpen_ = false;
-  headerWritten_ = false;
-  encodedFrameCount_ = 0;
-  hasPreviousFrame_ = false;
-  previousFrameHasTransparency_ = false;
-  previousIndexedPixels_.clear();
+  bufferedRgbaFrames_.clear();
 }
 
 } // namespace GifExporter
