@@ -304,12 +304,24 @@ LUT* GifWriter::defaultLUT() const {
   return LUT::GetLut(LUT::INT8, this);
 }
 
-bool GifWriter::hasOutputAlphaChannel() const {
-  return iop->channels().contains(Mask_Alpha);
+std::vector<Channel> GifWriter::selectedWriteChannels() const {
+  std::vector<Channel> channelsToWrite;
+  const int selectedChannelCount = depth();
+  channelsToWrite.reserve(static_cast<std::size_t>(selectedChannelCount));
+
+  for (int index = 0; index < selectedChannelCount; ++index) {
+    const Channel selectedChannel = channel(index);
+    if (selectedChannel != Chan_Black) {
+      channelsToWrite.push_back(selectedChannel);
+    }
+  }
+
+  return channelsToWrite;
 }
 
-bool GifWriter::hasSourceAlphaChannel() const {
-  return (input0().channels() & Mask_Alpha) != 0;
+bool GifWriter::hasOutputAlphaChannel() const {
+  const std::size_t selectedChannelCount = selectedWriteChannels().size();
+  return selectedChannelCount == 1 || selectedChannelCount == 2 || selectedChannelCount >= 4;
 }
 
 bool GifWriter::readCurrentFrameRGBA(std::vector<std::uint8_t>& rgbaPixels, std::string& error) {
@@ -322,8 +334,18 @@ bool GifWriter::readCurrentFrameRGBA(std::vector<std::uint8_t>& rgbaPixels, std:
     return false;
   }
 
-  const bool sourceAlphaAvailable = hasSourceAlphaChannel();
-  const ChannelSet channels = sourceAlphaAvailable ? Mask_RGBA : Mask_RGB;
+  const std::vector<Channel> writeChannels = selectedWriteChannels();
+  if (writeChannels.empty()) {
+    error = "GIF export requires at least one selected output channel.";
+    return false;
+  }
+
+  ChannelSet channels;
+  const std::size_t selectedChannelCount = writeChannels.size();
+  const std::size_t requestedChannelCount = std::min<std::size_t>(selectedChannelCount, 4);
+  for (std::size_t index = 0; index < requestedChannelCount; ++index) {
+    channels += writeChannels[index];
+  }
 
   rgbaPixels.resize(static_cast<std::size_t>(imageWidth) * static_cast<std::size_t>(imageHeight) * 4U);
 
@@ -346,20 +368,50 @@ bool GifWriter::readCurrentFrameRGBA(std::vector<std::uint8_t>& rgbaPixels, std:
     const int nukeY = imageHeight - outputY - 1;
     get(nukeY, 0, imageWidth, channels, row);
 
-    const float* alphaInput = sourceAlphaAvailable ? row[Chan_Alpha] : nullptr;
-    to_byte(0, redRow.data(), row[Chan_Red], alphaInput, imageWidth);
-    to_byte(1, greenRow.data(), row[Chan_Green], alphaInput, imageWidth);
-    to_byte(2, blueRow.data(), row[Chan_Blue], alphaInput, imageWidth);
+    std::fill(redRow.begin(), redRow.end(), static_cast<std::uint8_t>(0));
+    std::fill(greenRow.begin(), greenRow.end(), static_cast<std::uint8_t>(0));
+    std::fill(blueRow.begin(), blueRow.end(), static_cast<std::uint8_t>(0));
+    std::fill(alphaRow.begin(), alphaRow.end(), static_cast<std::uint8_t>(255));
 
-    if (sourceAlphaAvailable) {
-      const float* sourceAlpha = row[Chan_Alpha];
+    const Channel alphaChannel =
+        (selectedChannelCount == 1) ? writeChannels[0]
+        : (selectedChannelCount == 2) ? writeChannels[1]
+        : (selectedChannelCount >= 4) ? writeChannels[3]
+        : Chan_Black;
+    const float* alphaInput = alphaChannel != Chan_Black ? row[alphaChannel] : nullptr;
+
+    if (selectedChannelCount == 1) {
+      const float* sourceAlpha = row[writeChannels[0]];
+      for (int x = 0; x < imageWidth; ++x) {
+        const float alpha = sourceAlpha ? std::clamp(sourceAlpha[x], 0.0F, 1.0F) : 1.0F;
+        alphaRow[static_cast<std::size_t>(x)] =
+            static_cast<std::uint8_t>(alpha * 255.0F + 0.5F);
+      }
+    } else if (selectedChannelCount == 2) {
+      const Channel grayChannel = writeChannels[0];
+      to_byte(0, redRow.data(), row[grayChannel], alphaInput, imageWidth);
+      to_byte(1, greenRow.data(), row[grayChannel], alphaInput, imageWidth);
+      to_byte(2, blueRow.data(), row[grayChannel], alphaInput, imageWidth);
+
+      const float* sourceAlpha = row[alphaChannel];
       for (int x = 0; x < imageWidth; ++x) {
         const float alpha = sourceAlpha ? std::clamp(sourceAlpha[x], 0.0F, 1.0F) : 1.0F;
         alphaRow[static_cast<std::size_t>(x)] =
             static_cast<std::uint8_t>(alpha * 255.0F + 0.5F);
       }
     } else {
-      std::fill(alphaRow.begin(), alphaRow.end(), static_cast<std::uint8_t>(255));
+      to_byte(0, redRow.data(), row[writeChannels[0]], alphaInput, imageWidth);
+      to_byte(1, greenRow.data(), row[writeChannels[1]], alphaInput, imageWidth);
+      to_byte(2, blueRow.data(), row[writeChannels[2]], alphaInput, imageWidth);
+
+      if (alphaChannel != Chan_Black) {
+        const float* sourceAlpha = row[alphaChannel];
+        for (int x = 0; x < imageWidth; ++x) {
+          const float alpha = sourceAlpha ? std::clamp(sourceAlpha[x], 0.0F, 1.0F) : 1.0F;
+          alphaRow[static_cast<std::size_t>(x)] =
+              static_cast<std::uint8_t>(alpha * 255.0F + 0.5F);
+        }
+      }
     }
 
     const std::size_t rowOffset = static_cast<std::size_t>(outputY) * static_cast<std::size_t>(imageWidth) * 4U;

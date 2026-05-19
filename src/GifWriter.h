@@ -1,8 +1,10 @@
 #pragma once
 
 #include <cstdint>
+#include <string>
 #include <vector>
 
+#include "DDImage/Channel.h"
 #include "DDImage/FileWriter.h"
 #include "DDImage/Knob.h"
 
@@ -43,8 +45,8 @@ protected:
   DD::Image::LUT* defaultLUT() const override;
 
 private:
+  std::vector<DD::Image::Channel> selectedWriteChannels() const;
   bool hasOutputAlphaChannel() const;
-  bool hasSourceAlphaChannel() const;
   bool readCurrentFrameRGBA(std::vector<std::uint8_t>& rgbaPixels, std::string& error);
   void resetExecutionState();
   void updateKnobVisibility();
