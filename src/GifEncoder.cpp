@@ -305,26 +305,9 @@ void composePaletteSample(
     return;
   }
 
-  const std::uint8_t alphaByte = belowTransparencyThreshold ? 0 : sourceAlphaByte;
-  const float alpha = static_cast<float>(alphaByte) / 255.0F;
-  const float sourceRed = static_cast<float>(rgbaPixels[pixelOffset + 0]);
-  const float sourceGreen = static_cast<float>(rgbaPixels[pixelOffset + 1]);
-  const float sourceBlue = static_cast<float>(rgbaPixels[pixelOffset + 2]);
-
-  const bool needsMatteComposite = !options.useTransparency || alphaByte < 255;
-  const float red = needsMatteComposite
-      ? sourceRed * alpha + static_cast<float>(options.matteRed) * (1.0F - alpha)
-      : sourceRed;
-  const float green = needsMatteComposite
-      ? sourceGreen * alpha + static_cast<float>(options.matteGreen) * (1.0F - alpha)
-      : sourceGreen;
-  const float blue = needsMatteComposite
-      ? sourceBlue * alpha + static_cast<float>(options.matteBlue) * (1.0F - alpha)
-      : sourceBlue;
-
-  sample.red = static_cast<std::uint8_t>(std::clamp(std::lround(red), 0L, 255L));
-  sample.green = static_cast<std::uint8_t>(std::clamp(std::lround(green), 0L, 255L));
-  sample.blue = static_cast<std::uint8_t>(std::clamp(std::lround(blue), 0L, 255L));
+  sample.red = rgbaPixels[pixelOffset + 0];
+  sample.green = rgbaPixels[pixelOffset + 1];
+  sample.blue = rgbaPixels[pixelOffset + 2];
   includeSample = true;
 }
 
@@ -410,7 +393,7 @@ std::vector<PaletteColor> buildAdaptivePaletteColors(
   }
 
   if (samples.empty()) {
-    return {{options.matteRed, options.matteGreen, options.matteBlue}};
+    return {{0, 0, 0}};
   }
 
   std::vector<ColorBox> boxes;
@@ -538,9 +521,6 @@ void convertPixelsToIndexed(
   hasTransparentPixels = false;
 
   auto composePixel = [&](std::size_t pixelOffset, float& red, float& green, float& blue, bool& transparent) {
-    const float sourceRed = static_cast<float>(rgbaPixels[pixelOffset + 0]);
-    const float sourceGreen = static_cast<float>(rgbaPixels[pixelOffset + 1]);
-    const float sourceBlue = static_cast<float>(rgbaPixels[pixelOffset + 2]);
     const std::uint8_t sourceAlphaByte = rgbaPixels[pixelOffset + 3];
     const bool belowTransparencyThreshold = sourceAlphaByte <= options.transparentAlphaThreshold;
 
@@ -550,18 +530,9 @@ void convertPixelsToIndexed(
       return;
     }
 
-    const std::uint8_t alphaByte = belowTransparencyThreshold ? 0 : sourceAlphaByte;
-    const float alpha = static_cast<float>(alphaByte) / 255.0F;
-    const bool needsMatteComposite = !options.useTransparency || alphaByte < 255;
-    if (needsMatteComposite) {
-      red = sourceRed * alpha + static_cast<float>(options.matteRed) * (1.0F - alpha);
-      green = sourceGreen * alpha + static_cast<float>(options.matteGreen) * (1.0F - alpha);
-      blue = sourceBlue * alpha + static_cast<float>(options.matteBlue) * (1.0F - alpha);
-    } else {
-      red = sourceRed;
-      green = sourceGreen;
-      blue = sourceBlue;
-    }
+    red = static_cast<float>(rgbaPixels[pixelOffset + 0]);
+    green = static_cast<float>(rgbaPixels[pixelOffset + 1]);
+    blue = static_cast<float>(rgbaPixels[pixelOffset + 2]);
   };
 
   if (options.ditherMode == GifDitherMode::kNone) {
@@ -779,7 +750,7 @@ bool BuildAdaptiveGifPalette(
   std::vector<PaletteColor> paletteColors =
       buildAdaptivePaletteColors(width, height, rgbaFrames, options, targetColorCount);
   if (paletteColors.empty()) {
-    paletteColors.push_back({options.matteRed, options.matteGreen, options.matteBlue});
+    paletteColors.push_back({0, 0, 0});
   }
 
   palette.activeColorCount = std::min<int>(static_cast<int>(paletteColors.size()), targetColorCount);
@@ -802,9 +773,9 @@ bool BuildAdaptiveGifPalette(
 
   if (options.useTransparency) {
     const int transparentOffset = static_cast<int>(palette.transparentIndex) * 3;
-    palette.rgbTable[transparentOffset + 0] = options.matteRed;
-    palette.rgbTable[transparentOffset + 1] = options.matteGreen;
-    palette.rgbTable[transparentOffset + 2] = options.matteBlue;
+    palette.rgbTable[transparentOffset + 0] = 0;
+    palette.rgbTable[transparentOffset + 1] = 0;
+    palette.rgbTable[transparentOffset + 2] = 0;
   }
 
   return true;

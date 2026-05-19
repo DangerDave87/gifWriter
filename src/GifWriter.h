@@ -56,7 +56,6 @@ private:
   int ditherMode_;
   int maxColorsMode_;
   float transparencyThreshold_;
-  float matteColor_[3];
   double fps_;
 
   bool fileOpen_;

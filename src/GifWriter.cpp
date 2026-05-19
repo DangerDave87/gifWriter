@@ -58,16 +58,12 @@ GifEncoderOptions makeEncoderOptions(
     int ditherMode,
     int maxColorsMode,
     float transparencyThreshold,
-    const float matteColor[3],
     double fps) {
   GifEncoderOptions options;
   options.useTransparency = alphaAvailable;
   options.ditherMode = static_cast<GifDitherMode>(ditherMode);
   options.transparentAlphaThreshold =
       static_cast<std::uint8_t>(std::clamp(transparencyThreshold, 0.0F, 1.0F) * 255.0F + 0.5F);
-  options.matteRed = static_cast<std::uint8_t>(std::clamp(matteColor[0], 0.0F, 1.0F) * 255.0F + 0.5F);
-  options.matteGreen = static_cast<std::uint8_t>(std::clamp(matteColor[1], 0.0F, 1.0F) * 255.0F + 0.5F);
-  options.matteBlue = static_cast<std::uint8_t>(std::clamp(matteColor[2], 0.0F, 1.0F) * 255.0F + 0.5F);
   options.loopMode = loopMode == GifWriter::kLoopFixed
       ? GifLoopMode::kFixed
       : (loopMode == GifWriter::kLoopNone ? GifLoopMode::kNone : GifLoopMode::kInfinite);
@@ -97,7 +93,6 @@ GifWriter::GifWriter(Write* writeNode)
       ditherMode_(kDitherFloydSteinberg),
       maxColorsMode_(0),
       transparencyThreshold_(20.0F / 255.0F),
-      matteColor_{0.0F, 0.0F, 0.0F},
       fps_(24.0),
       fileOpen_(false) {
   if (root_real_fps) {
@@ -137,7 +132,6 @@ void GifWriter::finish() {
       ditherMode_,
       maxColorsMode_,
       transparencyThreshold_,
-      matteColor_,
       fps_);
 
   std::string error;
@@ -255,17 +249,14 @@ void GifWriter::knobs(Knob_Callback callback) {
   ClearFlags(callback, Knob::STARTLINE);
   SetFlags(callback, Knob::ENDLINE);
 
-  Float_knob(callback, &transparencyThreshold_, IRange(0.0, 1.0, true), "transparency_threshold", "threshold");
-  Tooltip(callback, "Alpha values at or below this threshold are treated as fully transparent for rgba output or fully matte for rgb output.");
+  Float_knob(callback, &transparencyThreshold_, IRange(0.0, 1.0, true), "transparency_threshold", "alpha min");
+  Tooltip(callback, "Alpha values at or below this threshold are treated as fully transparent when the Write channels include alpha.");
 
   Enumeration_knob(callback, &ditherMode_, kDitherModeLabels, "dither", "dither");
   Tooltip(callback, "Controls how palette quantization dithering is applied.");
 
   Enumeration_knob(callback, &maxColorsMode_, kMaxColorsLabels, "max_colors", "max colors");
   Tooltip(callback, "Limits the effective palette size. Fewer colors usually reduce file size.");
-
-  Color_knob(callback, matteColor_, IRange(0.0, 1.0, true), "matte_color", "matte color");
-  Tooltip(callback, "Matte color used when transparency is disabled or needs flattening.");
 
   Double_knob(callback, &fps_, IRange(0.01, 240.0, true), "fps", "fps");
   ClearFlags(callback, Knob::SLIDER);

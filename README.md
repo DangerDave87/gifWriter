@@ -16,7 +16,7 @@ The plug-in now provides a native animated GIF writer for Nuke with:
 - spec-correct GIF LZW compression
 - palette-size control
 - automatic frame differencing for smaller opaque animations
-- loop control, channel-driven transparency, matte color, fps, and dither options
+- loop control, channel-driven transparency, threshold, fps, and dither options
 
 The writer behaves like a movie writer:
 
@@ -33,8 +33,8 @@ The export pipeline currently does the following:
 - pixels are quantized into that shared indexed palette
 - GIF image data is compressed with a dictionary-based LZW encoder
 - the `max colors` knob reduces the effective palette size
-- optional dithering, transparency thresholding, and matte flattening are applied
-- Write `channels=rgba` produces transparent GIF output, while `channels=rgb` flattens to the selected matte color
+- optional dithering and transparency thresholding are applied
+- Write `channels=rgba` produces transparent GIF output, while `channels=rgb` preserves the visible source RGB color without adding GIF transparency
 - looping is controlled by the loop mode / loop count knobs
 - frame timing is derived from the `fps` knob
 - opaque animations automatically crop frames to changed regions to reduce file size
@@ -51,101 +51,190 @@ The plug-in target is named:
 
 Using the `gifWriter` name matches Nuke's writer naming convention for `.gif`.
 
-## Build requirements
+## Build
 
-According to the Nuke NDK documentation and Foundry's bundled Windows toolchain info:
+The project is built with CMake and expects a local Nuke install or NDK that provides the `include` and `DDImage` library paths. The helper scripts detect installed Nuke versions, build once per version, and copy the final plug-in into minor-version artifact folders such as `artifacts/15.1/`.
 
-- use CMake
-- on Windows, match the compiler family to the Nuke version you are targeting
-- build against the Nuke version you plan to load the plug-in into
+### Windows
 
-Recommended Windows targets for this repo:
+Requirements:
 
-- Nuke `14.x` -> Visual Studio `2019` / `v142`
-- Nuke `15.x` -> Visual Studio `2019` / `v142`
-- Nuke `16.x` -> Visual Studio `2019` / `v142`
-- Nuke `17.x` -> Visual Studio `2022` / `v143`
+- CMake `3.21+`
+- Visual Studio Build Tools or Visual Studio Community/Professional installed via Visual Studio Installer
+- the MSVC toolset expected by your target Nuke version
+- MSBuild
+- a Windows SDK
+- a local Nuke install such as `C:\Program Files\Nuke15.1v4`
 
-## Configure
+Where to get them:
 
-Point CMake at the Nuke install or SDK location. The project currently looks for:
+- install CMake from [cmake.org](https://cmake.org/download/) or with `winget install Kitware.CMake`
+- install Visual Studio Build Tools from Microsoft and select `Desktop development with C++`
+- in Visual Studio Installer, add the matching optional MSVC components such as `v141`, `v142`, or `v143`
 
-- `DDImage/Writer.h`
-- the `DDImage` library
+Default compiler policy used by the Windows script:
 
-The easiest approach is to pass `NUKE_ROOT`.
+- Nuke `13.2` -> `v141`
+- Nuke `14.x` -> `v142`
+- Nuke `15.x` -> `v142`
+- Nuke `16.x` -> `v142`
+- Nuke `17.x` -> `v143`
 
-Example:
+Windows build script:
+
+- [scripts/build-plugin-windows.ps1](/D:/002_Projekt/NukePlugins/GifExporter/scripts/build-plugin-windows.ps1)
+
+What it does:
+
+- scans common install roots and Windows uninstall entries for Nuke installs
+- picks the highest installed patch release for each requested minor version
+- configures and builds `gifWriter.dll`
+- copies the result to `artifacts/<minor>/gifWriter.dll`
+
+How to run it:
 
 ```powershell
-cmake -S . -B build -G "Visual Studio 16 2019" -A x64 -DNUKE_ROOT="C:\Program Files\Nuke15.0v1"
+# Show detected Nuke installs
+powershell -ExecutionPolicy Bypass -File .\scripts\build-plugin-windows.ps1 -ListOnly
+
+# Build one version
+powershell -ExecutionPolicy Bypass -File .\scripts\build-plugin-windows.ps1 -Versions 15.1
+
+# Build multiple versions
+powershell -ExecutionPolicy Bypass -File .\scripts\build-plugin-windows.ps1 -Versions 13.2,15.1,16.0,17.0
+
+# Clean and rebuild
+powershell -ExecutionPolicy Bypass -File .\scripts\build-plugin-windows.ps1 -Versions 15.1 -Clean
+```
+
+If your Nuke installs are not under `Program Files`, set custom search roots first:
+
+```powershell
+$env:NUKE_INSTALL_ROOTS = "D:\Apps;E:\Tools"
+```
+
+### Linux
+
+Requirements:
+
+- CMake `3.21+`
+- a working C++ toolchain compatible with your target Nuke version
+- `make` or another generator backend that CMake can drive
+- a local Nuke install or NDK under a searchable location such as `/usr/local` or `/opt`
+
+Where to get the C++ toolchain:
+
+- on Ubuntu or Debian: `sudo apt install build-essential cmake`
+- on Rocky, RHEL, or AlmaLinux: `sudo dnf install gcc-c++ make cmake`
+- on Fedora: `sudo dnf install gcc-c++ make cmake`
+- on openSUSE: `sudo zypper install gcc-c++ make cmake`
+
+The important pieces are a C++ compiler such as `g++` or `clang++`, the standard library headers, and `make`.
+
+Linux build script:
+
+- [scripts/build-plugin-linux.sh](/D:/002_Projekt/NukePlugins/GifExporter/scripts/build-plugin-linux.sh)
+
+What it does:
+
+- scans common Linux install roots for directories named like `Nuke15.1v4`
+- picks the highest installed patch release for each requested minor version
+- configures and builds `gifWriter.so`
+- copies the result to `artifacts/<minor>/gifWriter.so`
+
+How to run it:
+
+```bash
+# Show detected Nuke installs
+bash ./scripts/build-plugin-linux.sh --list-only
+
+# Build one version
+bash ./scripts/build-plugin-linux.sh --versions 15.1
+
+# Build multiple versions
+bash ./scripts/build-plugin-linux.sh --versions 15.1,16.0,17.0
+
+# Clean and rebuild
+bash ./scripts/build-plugin-linux.sh --versions 15.1 --clean
+```
+
+If your Nuke installs are in custom locations, set colon-separated search roots first:
+
+```bash
+export NUKE_INSTALL_ROOTS="/srv/apps:/mnt/tools"
+```
+
+### macOS
+
+Requirements:
+
+- CMake `3.21+`
+- Apple Xcode Command Line Tools
+- a local Nuke install or NDK, typically under `/Applications`
+
+Where to get them:
+
+- install Apple Command Line Tools with `xcode-select --install`
+- install CMake from [cmake.org](https://cmake.org/download/) or with Homebrew: `brew install cmake`
+
+The Apple Command Line Tools provide `clang`, `clang++`, the macOS SDK, and the developer headers needed for CMake builds.
+
+macOS build script:
+
+- [scripts/build-plugin-macos.sh](/D:/002_Projekt/NukePlugins/GifExporter/scripts/build-plugin-macos.sh)
+
+What it does:
+
+- scans common macOS install roots for directories or app bundles named like `Nuke15.1v4`
+- picks the highest installed patch release for each requested minor version
+- configures and builds `gifWriter.dylib`
+- copies the result to `artifacts/<minor>/gifWriter.dylib`
+
+How to run it:
+
+```bash
+# Show detected Nuke installs
+bash ./scripts/build-plugin-macos.sh --list-only
+
+# Build one version
+bash ./scripts/build-plugin-macos.sh --versions 15.1
+
+# Build multiple versions
+bash ./scripts/build-plugin-macos.sh --versions 15.1,16.0,17.0
+
+# Clean and rebuild
+bash ./scripts/build-plugin-macos.sh --versions 15.1 --clean
+```
+
+If your Nuke installs are in custom locations, set colon-separated search roots first:
+
+```bash
+export NUKE_INSTALL_ROOTS="/Volumes/Apps:/Users/me/Applications"
+```
+
+### Manual configure
+
+If you prefer to build without the helper scripts, pass `NUKE_ROOT` to CMake directly:
+
+```powershell
+cmake -S . -B build -G "Visual Studio 16 2019" -A x64 -DNUKE_ROOT="C:\Program Files\Nuke15.1v4"
 cmake --build build --config Release
+```
+
+```bash
+cmake -S . -B build -DNUKE_ROOT=/usr/local/Nuke15.1v4 -DCMAKE_BUILD_TYPE=Release
+cmake --build build
+```
+
+```bash
+cmake -S . -B build -DNUKE_ROOT=/Applications/Nuke15.1v4 -DCMAKE_BUILD_TYPE=Release
+cmake --build build
 ```
 
 If auto-detection is not enough, you can also pass:
 
 - `-DNUKE_INCLUDE_DIR=...`
 - `-DNUKE_DDIMAGE_LIBRARY=...`
-
-## Build helper script
-
-There is a Windows PowerShell helper script at:
-
-- [scripts/build-installed-nukes.ps1](/D:/002_Projekt/NukePlugins/GifExporter/scripts/build-installed-nukes.ps1)
-
-It does three things:
-
-- scans common install roots and Windows uninstall registry entries for installed Nuke versions
-- matches those installs against a requested list of minor versions
-- configures and builds this plug-in once per detected Nuke version, then copies `gifWriter.dll` into a minor-version `artifacts` folder such as `artifacts/13.2/`, `artifacts/16.0/`, or `artifacts/17.0/`
-
-Default supported version list:
-
-- `13.2`
-- `14.0`
-- `14.1`
-- `14.2`
-- `15.0`
-- `15.1`
-- `15.2`
-- `16.0`
-- `17.0`
-
-Examples:
-
-```powershell
-# Show detected installs only
-powershell -ExecutionPolicy Bypass -File .\scripts\build-installed-nukes.ps1 -ListOnly
-
-# Build Nuke 15.1 and 16.0 if installed
-powershell -ExecutionPolicy Bypass -File .\scripts\build-installed-nukes.ps1 -Versions 15.1,16.0
-
-# Build Nuke 13.2, 16.0, and 17.0 if installed
-powershell -ExecutionPolicy Bypass -File .\scripts\build-installed-nukes.ps1 -Versions 13.2,16.0,17.0
-
-# Build Nuke 17.0 with the default VS 2022 / v143 policy
-powershell -ExecutionPolicy Bypass -File .\scripts\build-installed-nukes.ps1 -Versions 17.0
-
-# Clean and rebuild all default target versions
-powershell -ExecutionPolicy Bypass -File .\scripts\build-installed-nukes.ps1 -Clean
-```
-
-The script uses these Foundry-era compiler expectations by default:
-
-- Nuke 14.x -> Visual Studio 2019 / `v142`
-- Nuke 15.x -> Visual Studio 2019 / `v142`
-- Nuke 16.x -> Visual Studio 2019 / `v142`
-- Nuke 17.x -> Visual Studio 2022 / `v143`
-
-The script now checks for the required toolset before invoking CMake, so missing `v142` or `v143` is reported as a friendly preflight error.
-
-You can still override both the generator and the toolset if your local machine has a different Visual Studio shell installed.
-
-If your Nuke installs live outside `Program Files`, set:
-
-```powershell
-$env:NUKE_INSTALL_ROOTS = "D:\Apps;E:\Tools"
-```
 
 ## Install for testing
 
@@ -160,16 +249,9 @@ On startup, Nuke should discover `gifWriter`, and `.gif` should become available
 
 - [CMakeLists.txt](/D:/002_Projekt/NukePlugins/GifExporter/CMakeLists.txt)
 - [cmake/FindNuke.cmake](/D:/002_Projekt/NukePlugins/GifExporter/cmake/FindNuke.cmake)
-- [scripts/build-installed-nukes.ps1](/D:/002_Projekt/NukePlugins/GifExporter/scripts/build-installed-nukes.ps1)
+- [scripts/build-plugin-windows.ps1](/D:/002_Projekt/NukePlugins/GifExporter/scripts/build-plugin-windows.ps1)
+- [scripts/build-plugin-linux.sh](/D:/002_Projekt/NukePlugins/GifExporter/scripts/build-plugin-linux.sh)
+- [scripts/build-plugin-macos.sh](/D:/002_Projekt/NukePlugins/GifExporter/scripts/build-plugin-macos.sh)
 - [src/GifWriter.h](/D:/002_Projekt/NukePlugins/GifExporter/src/GifWriter.h)
 - [src/GifWriter.cpp](/D:/002_Projekt/NukePlugins/GifExporter/src/GifWriter.cpp)
 - [docs/gif_writer_plan.md](/D:/002_Projekt/NukePlugins/GifExporter/docs/gif_writer_plan.md)
-
-## Next step
-
-The next implementation work is hardening and broader coverage:
-
-- reduce animated GIF file size further with smarter transparency-aware frame differencing
-- harden loop-count semantics and viewer compatibility edge cases
-- test across a wider set of transparency-heavy and gradient-heavy sequences
-- package and verify the writer across the supported Nuke versions

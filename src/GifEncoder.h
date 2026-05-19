@@ -26,9 +26,6 @@ struct GifIndexedFrame {
 struct GifEncoderOptions {
   bool useTransparency = false;
   GifDitherMode ditherMode = GifDitherMode::kNone;
-  std::uint8_t matteRed = 0;
-  std::uint8_t matteGreen = 0;
-  std::uint8_t matteBlue = 0;
   std::uint8_t transparentAlphaThreshold = 20;
   GifLoopMode loopMode = GifLoopMode::kInfinite;
   int loopCount = 0;
