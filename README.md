@@ -132,6 +132,40 @@ Where to get the C++ toolchain:
 
 The important pieces are a C++ compiler such as `g++` or `clang++`, the standard library headers, `make`, and the Mesa/OpenGL development headers that provide `GL/glu.h`.
 
+On some Rocky Linux 9 systems, especially when Nuke or its Qt/XCB/OpenGL dependencies are not fully present yet, you may also need the following extra packages:
+
+```bash
+sudo dnf install -y dnf-plugins-core && \
+sudo dnf config-manager --set-enabled crb && \
+sudo dnf makecache && \
+sudo dnf install -y \
+  libxcb \
+  libxcb-devel \
+  xcb-proto \
+  xcb-util \
+  xcb-util-devel \
+  xcb-util-wm \
+  xcb-util-wm-devel \
+  xcb-util-image \
+  xcb-util-image-devel \
+  xcb-util-keysyms \
+  xcb-util-keysyms-devel \
+  xcb-util-renderutil \
+  xcb-util-renderutil-devel \
+  xcb-util-cursor \
+  xcb-util-cursor-devel \
+  libxkbcommon-x11 \
+  libxkbcommon-devel \
+  libX11-xcb \
+  libX11-devel \
+  libglvnd \
+  libglvnd-opengl \
+  libglvnd-glx \
+  libglvnd-devel \
+  mesa-libGL-devel \
+  mesa-libEGL-devel
+```
+
 Linux build script:
 
 - [scripts/build-plugin-linux.sh](/D:/002_Projekt/NukePlugins/GifExporter/scripts/build-plugin-linux.sh)
