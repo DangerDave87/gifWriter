@@ -120,16 +120,17 @@ Requirements:
 - CMake `3.21+`
 - a working C++ toolchain compatible with your target Nuke version
 - `make` or another generator backend that CMake can drive
+- OpenGL development headers, including `GL/glu.h`
 - a local Nuke install or NDK under a searchable location such as `/usr/local` or `/opt`
 
 Where to get the C++ toolchain:
 
-- on Ubuntu or Debian: `sudo apt install build-essential cmake`
-- on Rocky, RHEL, or AlmaLinux: `sudo dnf install gcc-c++ make cmake`
-- on Fedora: `sudo dnf install gcc-c++ make cmake`
-- on openSUSE: `sudo zypper install gcc-c++ make cmake`
+- on Ubuntu or Debian: `sudo apt install build-essential cmake libglu1-mesa-dev mesa-common-dev`
+- on Rocky, RHEL, or AlmaLinux: `sudo dnf install gcc-c++ make cmake mesa-libGLU-devel mesa-libGL-devel`
+- on Fedora: `sudo dnf install gcc-c++ make cmake mesa-libGLU-devel mesa-libGL-devel`
+- on openSUSE: `sudo zypper install gcc-c++ make cmake Mesa-libGLU-devel Mesa-libGL-devel`
 
-The important pieces are a C++ compiler such as `g++` or `clang++`, the standard library headers, and `make`.
+The important pieces are a C++ compiler such as `g++` or `clang++`, the standard library headers, `make`, and the Mesa/OpenGL development headers that provide `GL/glu.h`.
 
 Linux build script:
 
@@ -138,6 +139,7 @@ Linux build script:
 What it does:
 
 - scans common Linux install roots for directories named like `Nuke15.1v4`
+- checks that the active compiler can find `GL/glu.h` before starting the build
 - picks the highest installed patch release for each requested minor version
 - configures and builds `gifWriter.so`
 - copies the result to `artifacts/<minor>/gifWriter.so`

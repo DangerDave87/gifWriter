@@ -213,6 +213,28 @@ require_value() {
   fi
 }
 
+check_linux_prerequisites() {
+  local compiler="${CXX:-c++}"
+
+  if ! command -v "$compiler" >/dev/null 2>&1; then
+    printf 'Required C++ compiler not found: %s\n' "$compiler" >&2
+    printf 'Install a compiler toolchain first, for example:\n' >&2
+    printf '  Ubuntu/Debian: sudo apt install build-essential cmake\n' >&2
+    printf '  Rocky/RHEL/Alma/Fedora: sudo dnf install gcc-c++ make cmake\n' >&2
+    printf '  openSUSE: sudo zypper install gcc-c++ make cmake\n' >&2
+    exit 1
+  fi
+
+  if ! printf '#include <GL/glu.h>\n' | "$compiler" -x c++ -E - >/dev/null 2>&1; then
+    printf 'Missing OpenGL GLU development headers: GL/glu.h\n' >&2
+    printf 'Install the OpenGL development package first, for example:\n' >&2
+    printf '  Ubuntu/Debian: sudo apt install libglu1-mesa-dev mesa-common-dev\n' >&2
+    printf '  Rocky/RHEL/Alma/Fedora: sudo dnf install mesa-libGLU-devel mesa-libGL-devel\n' >&2
+    printf '  openSUSE: sudo zypper install Mesa-libGLU-devel Mesa-libGL-devel\n' >&2
+    exit 1
+  fi
+}
+
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --versions)
@@ -312,6 +334,8 @@ printf '%s\n' "${TARGETS[@]}" | show_targets
 if [[ "$LIST_ONLY" -eq 1 ]]; then
   exit 0
 fi
+
+check_linux_prerequisites
 
 mkdir -p "$RESOLVED_BUILD_ROOT" "$RESOLVED_ARTIFACTS_ROOT"
 
