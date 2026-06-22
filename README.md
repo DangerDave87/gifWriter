@@ -101,7 +101,7 @@ powershell -ExecutionPolicy Bypass -File .\scripts\build-plugin-windows.ps1 -Lis
 powershell -ExecutionPolicy Bypass -File .\scripts\build-plugin-windows.ps1 -Versions 15.1
 
 # Build multiple versions
-powershell -ExecutionPolicy Bypass -File .\scripts\build-plugin-windows.ps1 -Versions 13.2,15.1,16.0,17.0
+powershell -ExecutionPolicy Bypass -File .\scripts\build-plugin-windows.ps1 -Versions 13.2,15.1,16.1,17.0
 
 # Clean and rebuild
 powershell -ExecutionPolicy Bypass -File .\scripts\build-plugin-windows.ps1 -Versions 15.1 -Clean
@@ -154,7 +154,7 @@ bash ./scripts/build-plugin-linux.sh --list-only
 bash ./scripts/build-plugin-linux.sh --versions 15.1
 
 # Build multiple versions
-bash ./scripts/build-plugin-linux.sh --versions 15.1,16.0,17.0
+bash ./scripts/build-plugin-linux.sh --versions 15.1,16.1,17.0
 
 # Clean and rebuild
 bash ./scripts/build-plugin-linux.sh --versions 15.1 --clean
@@ -202,7 +202,7 @@ bash ./scripts/build-plugin-macos.sh --list-only
 bash ./scripts/build-plugin-macos.sh --versions 15.1
 
 # Build multiple versions
-bash ./scripts/build-plugin-macos.sh --versions 15.1,16.0,17.0
+bash ./scripts/build-plugin-macos.sh --versions 15.1,16.1,17.0
 
 # Clean and rebuild
 bash ./scripts/build-plugin-macos.sh --versions 15.1 --clean

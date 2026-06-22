@@ -9,6 +9,7 @@ param(
         "15.1",
         "15.2",
         "16.0",
+        "16.1",
         "17.0"
     ),
     [ValidateSet("Release", "Debug", "RelWithDebInfo", "MinSizeRel")]
