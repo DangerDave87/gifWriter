@@ -16,6 +16,11 @@ DEFAULT_VERSIONS=(
 )
 
 VERSIONS=()
+REQUESTED_VERSIONS=()
+SEARCH_ROOTS=()
+INSTALLED_NUKES=()
+TARGETS=()
+
 CONFIGURATION="Release"
 BUILD_ROOT=""
 ARTIFACTS_ROOT=""
@@ -51,12 +56,26 @@ resolve_path_or_default() {
   printf '%s\n' "$configured"
 }
 
-normalize_versions() {
-  local -a raw_versions=("$@")
-  local -A seen=()
-  local -a normalized=()
-  local entry part value
+append_unique() {
+  local array_name="$1"
+  local value="$2"
+  local existing
+  eval "local current=(\"\${${array_name}[@]}\")"
 
+  for existing in "${current[@]}"; do
+    if [[ "$existing" == "$value" ]]; then
+      return
+    fi
+  done
+
+  eval "${array_name}+=(\"\$value\")"
+}
+
+normalize_versions() {
+  local entry part value
+  local raw_versions=("$@")
+
+  REQUESTED_VERSIONS=()
   if [[ ${#raw_versions[@]} -eq 0 ]]; then
     raw_versions=("${DEFAULT_VERSIONS[@]}")
   fi
@@ -69,40 +88,26 @@ normalize_versions() {
       if [[ "$value" =~ ^[0-9]+$ ]]; then
         value="${value}.0"
       fi
-      if [[ -z "${seen[$value]+x}" ]]; then
-        normalized+=("$value")
-        seen[$value]=1
-      fi
+      append_unique REQUESTED_VERSIONS "$value"
     done
   done
-
-  printf '%s\n' "${normalized[@]}"
 }
 
 get_search_roots() {
-  local -A seen=()
-  local -a roots=()
   local root
 
+  SEARCH_ROOTS=()
   if [[ -n "${NUKE_INSTALL_ROOTS:-}" ]]; then
     IFS=':' read -r -a env_roots <<< "$NUKE_INSTALL_ROOTS"
     for root in "${env_roots[@]}"; do
       [[ -n "$root" ]] || continue
-      if [[ -z "${seen[$root]+x}" ]]; then
-        roots+=("$root")
-        seen[$root]=1
-      fi
+      append_unique SEARCH_ROOTS "$root"
     done
   fi
 
   for root in "/Applications" "/Applications/Foundry" "/usr/local" "/opt" "$HOME/Applications" "$HOME/apps"; do
-    if [[ -z "${seen[$root]+x}" ]]; then
-      roots+=("$root")
-      seen[$root]=1
-    fi
+    append_unique SEARCH_ROOTS "$root"
   done
-
-  printf '%s\n' "${roots[@]}"
 }
 
 parse_nuke_install_name() {
@@ -112,13 +117,49 @@ parse_nuke_install_name() {
   fi
 }
 
-get_installed_nukes() {
-  local -A found_by_dir=()
-  local -A best_patch=()
-  local -A best_record=()
-  local root dir name parsed minor patch full source install_dir
+find_record_index_by_minor() {
+  local array_name="$1"
+  local target_minor="$2"
+  local records index record minor
+  eval "records=(\"\${${array_name}[@]}\")"
 
-  while IFS= read -r root; do
+  for ((index = 0; index < ${#records[@]}; ++index)); do
+    record="${records[$index]}"
+    IFS='|' read -r minor _rest <<< "$record"
+    if [[ "$minor" == "$target_minor" ]]; then
+      printf '%s\n' "$index"
+      return
+    fi
+  done
+
+  printf '%s\n' "-1"
+}
+
+find_record_by_minor() {
+  local array_name="$1"
+  local target_minor="$2"
+  local records record minor
+  eval "records=(\"\${${array_name}[@]}\")"
+
+  for record in "${records[@]}"; do
+    IFS='|' read -r minor _rest <<< "$record"
+    if [[ "$minor" == "$target_minor" ]]; then
+      printf '%s\n' "$record"
+      return 0
+    fi
+  done
+
+  return 1
+}
+
+get_installed_nukes() {
+  local candidate_records=()
+  local best_records=()
+  local root dir name parsed install_dir record index existing_patch minor patch
+
+  get_search_roots
+
+  for root in "${SEARCH_ROOTS[@]}"; do
     [[ -d "$root" ]] || continue
 
     name="$(basename "$root")"
@@ -128,7 +169,7 @@ get_installed_nukes() {
       if [[ "$name" == *.app && -d "${root}/Contents/MacOS" ]]; then
         install_dir="${root}/Contents/MacOS"
       fi
-      found_by_dir["$install_dir"]="${parsed}|${install_dir}|filesystem"
+      append_unique candidate_records "${parsed}|${install_dir}|filesystem"
     fi
 
     while IFS= read -r -d '' dir; do
@@ -139,27 +180,37 @@ get_installed_nukes() {
         if [[ "$name" == *.app && -d "${dir}/Contents/MacOS" ]]; then
           install_dir="${dir}/Contents/MacOS"
         fi
-        found_by_dir["$install_dir"]="${parsed}|${install_dir}|filesystem"
+        append_unique candidate_records "${parsed}|${install_dir}|filesystem"
       fi
     done < <(find "$root" -mindepth 1 -maxdepth 1 -type d -name 'Nuke*' -print0 2>/dev/null)
-  done < <(get_search_roots)
+  done
 
-  for dir in "${!found_by_dir[@]}"; do
-    IFS='|' read -r minor patch full _ source <<< "${found_by_dir[$dir]}"
-    if [[ -z "${best_patch[$minor]+x}" || "$patch" -gt "${best_patch[$minor]}" ]]; then
-      best_patch[$minor]="$patch"
-      best_record[$minor]="${minor}|${full}|${dir}|${source}"
+  for record in "${candidate_records[@]}"; do
+    IFS='|' read -r minor patch _rest <<< "$record"
+    index="$(find_record_index_by_minor best_records "$minor")"
+
+    if [[ "$index" == "-1" ]]; then
+      best_records+=("$record")
+      continue
+    fi
+
+    IFS='|' read -r _ existing_patch _rest <<< "${best_records[$index]}"
+    if [[ "$patch" -gt "$existing_patch" ]]; then
+      best_records[$index]="$record"
     fi
   done
 
-  for minor in "${!best_record[@]}"; do
-    printf '%s\n' "${best_record[$minor]}"
-  done | sort -t'|' -k1,1V
+  INSTALLED_NUKES=()
+  while IFS= read -r line; do
+    [[ -n "$line" ]] || continue
+    INSTALLED_NUKES+=("$line")
+  done < <(printf '%s\n' "${best_records[@]}" | sort -t'|' -k1,1)
 }
 
 show_targets() {
-  local record minor full install_dir source
-  while IFS='|' read -r minor full install_dir source; do
+  local record minor patch full install_dir source
+  for record in "$@"; do
+    IFS='|' read -r minor patch full install_dir source <<< "$record"
     printf '%s\t%s\t%s\t%s\n' "$minor" "$full" "$install_dir" "$source"
   done
 }
@@ -303,26 +354,26 @@ esac
 REPO_ROOT="$(repo_root)"
 RESOLVED_BUILD_ROOT="$(resolve_path_or_default "$BUILD_ROOT" "build")"
 RESOLVED_ARTIFACTS_ROOT="$(resolve_path_or_default "$ARTIFACTS_ROOT" "artifacts")"
-mapfile -t REQUESTED_VERSIONS < <(normalize_versions "${VERSIONS[@]}")
+
+if [[ ${#VERSIONS[@]} -eq 0 ]]; then
+  normalize_versions
+else
+  normalize_versions "${VERSIONS[@]}"
+fi
 
 write_section "Scanning for Nuke installs"
-mapfile -t INSTALLED_NUKES < <(get_installed_nukes)
+get_installed_nukes
 
 if [[ ${#INSTALLED_NUKES[@]} -eq 0 ]]; then
   printf 'No installed Nuke versions were found. Set NUKE_INSTALL_ROOTS if your installs are in a custom location.\n' >&2
   exit 1
 fi
 
-declare -A INSTALLED_BY_MINOR=()
-for record in "${INSTALLED_NUKES[@]}"; do
-  IFS='|' read -r minor _ <<< "$record"
-  INSTALLED_BY_MINOR["$minor"]="$record"
-done
-
 TARGETS=()
 for version in "${REQUESTED_VERSIONS[@]}"; do
-  if [[ -n "${INSTALLED_BY_MINOR[$version]+x}" ]]; then
-    TARGETS+=("${INSTALLED_BY_MINOR[$version]}")
+  record="$(find_record_by_minor INSTALLED_NUKES "$version" || true)"
+  if [[ -n "$record" ]]; then
+    TARGETS+=("$record")
   fi
 done
 
@@ -334,7 +385,7 @@ if [[ ${#TARGETS[@]} -eq 0 ]]; then
 fi
 
 printf 'MinorVersion\tFullVersion\tInstallDir\tSource\n'
-printf '%s\n' "${TARGETS[@]}" | show_targets
+show_targets "${TARGETS[@]}"
 
 if [[ "$LIST_ONLY" -eq 1 ]]; then
   exit 0
@@ -343,7 +394,7 @@ fi
 mkdir -p "$RESOLVED_BUILD_ROOT" "$RESOLVED_ARTIFACTS_ROOT"
 
 for record in "${TARGETS[@]}"; do
-  IFS='|' read -r minor_version full_version install_dir _ <<< "$record"
+  IFS='|' read -r minor_version _patch full_version install_dir _source <<< "$record"
   build_dir="${RESOLVED_BUILD_ROOT}/${full_version}"
 
   write_section "Building against ${full_version}"
