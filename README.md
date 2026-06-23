@@ -215,6 +215,8 @@ Where to get them:
 
 The Apple Command Line Tools provide `clang`, `clang++`, the macOS SDK, and the developer headers needed for CMake builds.
 
+By default, the macOS helper script requests a universal binary with both `x86_64` and `arm64` slices so the resulting plug-in can be used on Intel Macs and Apple Silicon Macs.
+
 macOS build script:
 
 - [scripts/build-plugin-macos.sh](/D:/002_Projekt/NukePlugins/GifExporter/scripts/build-plugin-macos.sh)
@@ -223,7 +225,7 @@ What it does:
 
 - scans common macOS install roots for directories or app bundles named like `Nuke15.1v4`
 - picks the highest installed patch release for each requested minor version
-- configures and builds `gifWriter.dylib`
+- configures and builds a universal `gifWriter.dylib` for `x86_64` and `arm64` by default
 - copies the result to `artifacts/<minor>/gifWriter.dylib`
 
 How to run it:
@@ -237,6 +239,9 @@ bash ./scripts/build-plugin-macos.sh --versions 15.1
 
 # Build multiple versions
 bash ./scripts/build-plugin-macos.sh --versions 15.1,16.1,17.0
+
+# Build only arm64 if you explicitly want a single-architecture binary
+bash ./scripts/build-plugin-macos.sh --versions 15.1 --architectures arm64
 
 # Clean and rebuild
 bash ./scripts/build-plugin-macos.sh --versions 15.1 --clean
@@ -263,7 +268,7 @@ cmake --build build
 ```
 
 ```bash
-cmake -S . -B build -DNUKE_ROOT=/Applications/Nuke15.1v4 -DCMAKE_BUILD_TYPE=Release
+cmake -S . -B build -DNUKE_ROOT=/Applications/Nuke15.1v4 -DCMAKE_BUILD_TYPE=Release -DCMAKE_OSX_ARCHITECTURES="x86_64;arm64"
 cmake --build build
 ```
 

@@ -20,6 +20,7 @@ CONFIGURATION="Release"
 BUILD_ROOT=""
 ARTIFACTS_ROOT=""
 GENERATOR=""
+ARCHITECTURES="x86_64;arm64"
 LIST_ONLY=0
 CLEAN=0
 
@@ -195,6 +196,10 @@ copy_build_artifact() {
 
   mkdir -p "${artifacts_dir}/${minor_version}"
   cp -f "$artifact" "${artifacts_dir}/${minor_version}/gifWriter.dylib"
+
+  if command -v lipo >/dev/null 2>&1; then
+    printf 'Artifact architectures: %s\n' "$(lipo -archs "${artifacts_dir}/${minor_version}/gifWriter.dylib")"
+  fi
 }
 
 usage() {
@@ -207,6 +212,7 @@ Options:
   --build-root <path>     Override the build directory root
   --artifacts-root <path> Override the artifacts directory root
   --generator <name>      Override the CMake generator
+  --architectures <list>  macOS architectures, default: x86_64;arm64
   --list-only             Show detected targets without building
   --clean                 Remove the per-version build directory before configuring
   --help                  Show this help text
@@ -220,6 +226,13 @@ require_value() {
     usage
     exit 1
   fi
+}
+
+normalize_architectures() {
+  local raw_value="$1"
+  local cleaned="${raw_value// /}"
+  cleaned="${cleaned//,/;}"
+  printf '%s\n' "$cleaned"
 }
 
 while [[ $# -gt 0 ]]; do
@@ -252,6 +265,11 @@ while [[ $# -gt 0 ]]; do
       shift
       require_value --generator "${1:-}"
       GENERATOR="${1:-}"
+      ;;
+    --architectures)
+      shift
+      require_value --architectures "${1:-}"
+      ARCHITECTURES="$(normalize_architectures "${1:-}")"
       ;;
     --list-only)
       LIST_ONLY=1
@@ -341,12 +359,14 @@ for record in "${TARGETS[@]}"; do
     "-DNUKE_ROOT=${install_dir}"
     "-DCMAKE_PREFIX_PATH=${install_dir}"
     "-DCMAKE_BUILD_TYPE=${CONFIGURATION}"
+    "-DCMAKE_OSX_ARCHITECTURES=${ARCHITECTURES}"
   )
 
   if [[ -n "$GENERATOR" ]]; then
     configure_args+=(-G "$GENERATOR")
   fi
 
+  printf 'Using architectures: %s\n' "$ARCHITECTURES"
   print_command "${configure_args[@]}"
   "${configure_args[@]}"
 
