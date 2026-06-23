@@ -503,7 +503,7 @@ function Copy-BuildArtifact {
 
 $repoRoot = Get-RepoRoot
 $resolvedBuildRoot = Get-DefaultPath -Configured $BuildRoot -FallbackRelative "build"
-$resolvedArtifactsRoot = Get-DefaultPath -Configured $ArtifactsRoot -FallbackRelative "artifacts"
+$resolvedArtifactsRoot = Get-DefaultPath -Configured $ArtifactsRoot -FallbackRelative "nuke\Windows"
 $requestedVersions = Normalize-VersionList -RawVersions $Versions
 $installedVisualStudios = Get-InstalledVisualStudios
 $supportedCMakeGenerators = Get-CMakeSupportedGenerators

@@ -298,7 +298,7 @@ esac
 
 REPO_ROOT="$(repo_root)"
 RESOLVED_BUILD_ROOT="$(resolve_path_or_default "$BUILD_ROOT" "build")"
-RESOLVED_ARTIFACTS_ROOT="$(resolve_path_or_default "$ARTIFACTS_ROOT" "artifacts")"
+RESOLVED_ARTIFACTS_ROOT="$(resolve_path_or_default "$ARTIFACTS_ROOT" "nuke/Linux")"
 mapfile -t REQUESTED_VERSIONS < <(normalize_versions "${VERSIONS[@]}")
 
 write_section "Scanning for Nuke installs"

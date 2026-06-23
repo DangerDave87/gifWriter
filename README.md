@@ -53,7 +53,7 @@ Using the `gifWriter` name matches Nuke's writer naming convention for `.gif`.
 
 ## Build
 
-The project is built with CMake and expects a local Nuke install or NDK that provides the `include` and `DDImage` library paths. The helper scripts detect installed Nuke versions, build once per version, and copy the final plug-in into versioned artifact folders. On macOS, the output also includes an architecture subfolder so Intel and Apple Silicon builds stay separate.
+The project is built with CMake and expects a local Nuke install or NDK that provides the `include` and `DDImage` library paths. The helper scripts detect installed Nuke versions, build once per version, and copy the final plug-in into the packaged Nuke folder layout under `nuke/`. On macOS, the output also includes an architecture subfolder so Intel and Apple Silicon builds stay separate.
 
 ### Windows
 
@@ -89,7 +89,7 @@ What it does:
 - scans common install roots and Windows uninstall entries for Nuke installs
 - picks the highest installed patch release for each requested minor version
 - configures and builds `gifWriter.dll`
-- copies the result to `artifacts/<minor>/gifWriter.dll`
+- copies the result to `nuke/Windows/<minor>/gifWriter.dll`
 
 How to run it:
 
@@ -176,7 +176,7 @@ What it does:
 - checks that the active compiler can find `GL/glu.h` before starting the build
 - picks the highest installed patch release for each requested minor version
 - configures and builds `gifWriter.so`
-- copies the result to `artifacts/<minor>/gifWriter.so`
+- copies the result to `nuke/Linux/<minor>/gifWriter.so`
 
 How to run it:
 
@@ -228,7 +228,7 @@ What it does:
 - resolves one target architecture per build: `x86_64`, `arm64`, or `auto`
 - when `--architectures auto` is used, it inspects the target Nuke install and picks one compatible architecture
 - configures and builds `gifWriter.dylib` for that single architecture
-- copies the result to `artifacts/<minor>/<arch>/gifWriter.dylib`
+- copies the result to `nuke/MacOS/<minor>/<arch>/gifWriter.dylib`
 
 How to run it:
 
@@ -284,12 +284,12 @@ If auto-detection is not enough, you can also pass:
 
 ## Install for testing
 
-Copy the resulting plug-in into one of these locations:
+Add the [nuke](/D:/002_Projekt/NukePlugins/GifExporter/nuke) folder to one of these locations:
 
 - your `~/.nuke` directory
 - a custom directory on `NUKE_PATH`
 
-On startup, Nuke should discover `gifWriter`, and `.gif` should become available as a native write format.
+On startup, [nuke/init.py](/D:/002_Projekt/NukePlugins/GifExporter/nuke/init.py) adds the correct platform and version subfolder automatically, and `.gif` should become available as a native write format.
 
 ## Source layout
 
@@ -298,6 +298,7 @@ On startup, Nuke should discover `gifWriter`, and `.gif` should become available
 - [scripts/build-plugin-windows.ps1](/D:/002_Projekt/NukePlugins/GifExporter/scripts/build-plugin-windows.ps1)
 - [scripts/build-plugin-linux.sh](/D:/002_Projekt/NukePlugins/GifExporter/scripts/build-plugin-linux.sh)
 - [scripts/build-plugin-macos.sh](/D:/002_Projekt/NukePlugins/GifExporter/scripts/build-plugin-macos.sh)
+- [nuke/init.py](/D:/002_Projekt/NukePlugins/GifExporter/nuke/init.py)
 - [src/GifWriter.h](/D:/002_Projekt/NukePlugins/GifExporter/src/GifWriter.h)
 - [src/GifWriter.cpp](/D:/002_Projekt/NukePlugins/GifExporter/src/GifWriter.cpp)
 - [docs/gif_writer_plan.md](/D:/002_Projekt/NukePlugins/GifExporter/docs/gif_writer_plan.md)
