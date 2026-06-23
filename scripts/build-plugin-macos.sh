@@ -25,7 +25,7 @@ CONFIGURATION="Release"
 BUILD_ROOT=""
 ARTIFACTS_ROOT=""
 GENERATOR=""
-ARCHITECTURES="x86_64;arm64"
+ARCHITECTURES="auto"
 LIST_ONLY=0
 CLEAN=0
 
@@ -242,8 +242,10 @@ copy_build_artifact() {
   local build_dir="$1"
   local configuration="$2"
   local minor_version="$3"
-  local artifacts_dir="$4"
+  local architecture="$4"
+  local artifacts_dir="$5"
   local artifact=""
+  local destination_dir=""
   local candidate
 
   for candidate in \
@@ -260,11 +262,12 @@ copy_build_artifact() {
     return
   fi
 
-  mkdir -p "${artifacts_dir}/${minor_version}"
-  cp -f "$artifact" "${artifacts_dir}/${minor_version}/gifWriter.dylib"
+  destination_dir="${artifacts_dir}/${minor_version}/${architecture}"
+  mkdir -p "$destination_dir"
+  cp -f "$artifact" "${destination_dir}/gifWriter.dylib"
 
   if command -v lipo >/dev/null 2>&1; then
-    printf 'Artifact architectures: %s\n' "$(lipo -archs "${artifacts_dir}/${minor_version}/gifWriter.dylib")"
+    printf 'Artifact architectures: %s\n' "$(lipo -archs "${destination_dir}/gifWriter.dylib")"
   fi
 }
 
@@ -278,7 +281,7 @@ Options:
   --build-root <path>     Override the build directory root
   --artifacts-root <path> Override the artifacts directory root
   --generator <name>      Override the CMake generator
-  --architectures <list>  macOS architectures, default: x86_64;arm64
+  --architectures <arch>  macOS architecture: auto, x86_64, or arm64. Default: auto
   --list-only             Show detected targets without building
   --clean                 Remove the per-version build directory before configuring
   --help                  Show this help text
@@ -297,8 +300,111 @@ require_value() {
 normalize_architectures() {
   local raw_value="$1"
   local cleaned="${raw_value// /}"
-  cleaned="${cleaned//,/;}"
-  printf '%s\n' "$cleaned"
+  cleaned="${cleaned//,/}"
+  cleaned="${cleaned//;/}"
+
+  case "$cleaned" in
+    auto|x86_64|arm64)
+      printf '%s\n' "$cleaned"
+      ;;
+    *)
+      printf 'Unsupported value for --architectures: %s. Use auto, x86_64, or arm64.\n' "$raw_value" >&2
+      exit 1
+      ;;
+  esac
+}
+
+find_ddimage_library() {
+  local install_dir="$1"
+  local candidate
+
+  for candidate in \
+    "${install_dir}/libDDImage.dylib" \
+    "${install_dir}/DDImage.dylib" \
+    "${install_dir}/DDImage" \
+    "${install_dir}/lib/libDDImage.dylib"; do
+    if [[ -f "$candidate" ]]; then
+      printf '%s\n' "$candidate"
+      return 0
+    fi
+  done
+
+  return 1
+}
+
+default_host_architecture() {
+  local host_arch
+
+  host_arch="$(uname -m 2>/dev/null || true)"
+  case "$host_arch" in
+    arm64|aarch64)
+      printf 'arm64\n'
+      ;;
+    x86_64)
+      printf 'x86_64\n'
+      ;;
+    *)
+      printf 'x86_64\n'
+      ;;
+  esac
+}
+
+get_available_nuke_architectures() {
+  local install_dir="$1"
+  local ddimage_path
+
+  if ! command -v lipo >/dev/null 2>&1; then
+    return 1
+  fi
+
+  ddimage_path="$(find_ddimage_library "$install_dir" || true)"
+  if [[ -z "$ddimage_path" ]]; then
+    return 1
+  fi
+
+  lipo -archs "$ddimage_path" 2>/dev/null
+}
+
+resolve_effective_architectures() {
+  local install_dir="$1"
+  local requested="$2"
+  local available_archs arch host_arch
+
+  available_archs="$(get_available_nuke_architectures "$install_dir" || true)"
+
+  if [[ -z "$available_archs" ]]; then
+    if [[ "$requested" == "auto" ]]; then
+      default_host_architecture
+    else
+      printf '%s\n' "$requested"
+    fi
+    return 0
+  fi
+
+  if [[ "$requested" == "auto" ]]; then
+    host_arch="$(default_host_architecture)"
+    for arch in $available_archs; do
+      if [[ "$arch" == "$host_arch" ]]; then
+        printf '%s\n' "$arch"
+        return 0
+      fi
+    done
+
+    for arch in $available_archs; do
+      printf '%s\n' "$arch"
+      return 0
+    done
+  fi
+
+  for arch in $available_archs; do
+    if [[ "$arch" == "$requested" ]]; then
+      printf '%s\n' "$arch"
+      return 0
+    fi
+  done
+
+  printf '\n'
+  return 1
 }
 
 while [[ $# -gt 0 ]]; do
@@ -410,9 +516,20 @@ mkdir -p "$RESOLVED_BUILD_ROOT" "$RESOLVED_ARTIFACTS_ROOT"
 
 for record in "${TARGETS[@]}"; do
   IFS='|' read -r minor_version _patch full_version install_dir _source <<< "$record"
-  build_dir="${RESOLVED_BUILD_ROOT}/${full_version}"
+  available_architectures="$(get_available_nuke_architectures "$install_dir" || true)"
+  effective_architectures="$(resolve_effective_architectures "$install_dir" "$ARCHITECTURES" || true)"
+  build_dir="${RESOLVED_BUILD_ROOT}/${full_version}-${effective_architectures}"
 
   write_section "Building against ${full_version}"
+
+  if [[ -z "$effective_architectures" ]]; then
+    if [[ -n "$available_architectures" ]]; then
+      printf 'Could not match requested architecture "%s" against the architectures available in Nuke at %s: %s\n' "$ARCHITECTURES" "$install_dir" "$available_architectures" >&2
+    else
+      printf 'Could not resolve a build architecture for %s\n' "$install_dir" >&2
+    fi
+    exit 1
+  fi
 
   if [[ "$CLEAN" -eq 1 && -d "$build_dir" ]]; then
     rm -rf "$build_dir"
@@ -425,14 +542,22 @@ for record in "${TARGETS[@]}"; do
     "-DNUKE_ROOT=${install_dir}"
     "-DCMAKE_PREFIX_PATH=${install_dir}"
     "-DCMAKE_BUILD_TYPE=${CONFIGURATION}"
-    "-DCMAKE_OSX_ARCHITECTURES=${ARCHITECTURES}"
+    "-DCMAKE_OSX_ARCHITECTURES=${effective_architectures}"
   )
 
   if [[ -n "$GENERATOR" ]]; then
     configure_args+=(-G "$GENERATOR")
   fi
 
-  printf 'Using architectures: %s\n' "$ARCHITECTURES"
+  if [[ "$ARCHITECTURES" == "auto" ]]; then
+    if [[ -n "$available_architectures" ]]; then
+      printf 'Available Nuke architectures: %s\n' "$available_architectures"
+    fi
+    printf 'Using architecture: %s\n' "$effective_architectures"
+  else
+    printf 'Requested architecture: %s\n' "$ARCHITECTURES"
+    printf 'Using architecture: %s\n' "$effective_architectures"
+  fi
   print_command "${configure_args[@]}"
   "${configure_args[@]}"
 
@@ -445,7 +570,7 @@ for record in "${TARGETS[@]}"; do
   print_command "${build_args[@]}"
   "${build_args[@]}"
 
-  copy_build_artifact "$build_dir" "$CONFIGURATION" "$minor_version" "$RESOLVED_ARTIFACTS_ROOT"
+  copy_build_artifact "$build_dir" "$CONFIGURATION" "$minor_version" "$effective_architectures" "$RESOLVED_ARTIFACTS_ROOT"
 done
 
 write_section "Done"

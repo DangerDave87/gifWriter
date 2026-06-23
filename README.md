@@ -53,7 +53,7 @@ Using the `gifWriter` name matches Nuke's writer naming convention for `.gif`.
 
 ## Build
 
-The project is built with CMake and expects a local Nuke install or NDK that provides the `include` and `DDImage` library paths. The helper scripts detect installed Nuke versions, build once per version, and copy the final plug-in into minor-version artifact folders such as `artifacts/15.1/`.
+The project is built with CMake and expects a local Nuke install or NDK that provides the `include` and `DDImage` library paths. The helper scripts detect installed Nuke versions, build once per version, and copy the final plug-in into versioned artifact folders. On macOS, the output also includes an architecture subfolder so Intel and Apple Silicon builds stay separate.
 
 ### Windows
 
@@ -215,7 +215,7 @@ Where to get them:
 
 The Apple Command Line Tools provide `clang`, `clang++`, the macOS SDK, and the developer headers needed for CMake builds.
 
-By default, the macOS helper script requests a universal binary with both `x86_64` and `arm64` slices so the resulting plug-in can be used on Intel Macs and Apple Silicon Macs.
+The macOS helper script builds a single-architecture plug-in per run. This matches Foundry's separate Intel and Apple Silicon Nuke installers more closely and avoids trying to produce a universal binary when the target Nuke libraries are not universal.
 
 macOS build script:
 
@@ -225,8 +225,10 @@ What it does:
 
 - scans common macOS install roots for directories or app bundles named like `Nuke15.1v4`
 - picks the highest installed patch release for each requested minor version
-- configures and builds a universal `gifWriter.dylib` for `x86_64` and `arm64` by default
-- copies the result to `artifacts/<minor>/gifWriter.dylib`
+- resolves one target architecture per build: `x86_64`, `arm64`, or `auto`
+- when `--architectures auto` is used, it inspects the target Nuke install and picks one compatible architecture
+- configures and builds `gifWriter.dylib` for that single architecture
+- copies the result to `artifacts/<minor>/<arch>/gifWriter.dylib`
 
 How to run it:
 
@@ -240,8 +242,11 @@ bash ./scripts/build-plugin-macos.sh --versions 15.1
 # Build multiple versions
 bash ./scripts/build-plugin-macos.sh --versions 15.1,16.1,17.0
 
-# Build only arm64 if you explicitly want a single-architecture binary
+# Build an Apple Silicon plug-in
 bash ./scripts/build-plugin-macos.sh --versions 15.1 --architectures arm64
+
+# Build an Intel plug-in
+bash ./scripts/build-plugin-macos.sh --versions 15.1 --architectures x86_64
 
 # Clean and rebuild
 bash ./scripts/build-plugin-macos.sh --versions 15.1 --clean
@@ -268,7 +273,7 @@ cmake --build build
 ```
 
 ```bash
-cmake -S . -B build -DNUKE_ROOT=/Applications/Nuke15.1v4/Nuke15.1v4.app/Contents/MacOS -DCMAKE_BUILD_TYPE=Release -DCMAKE_OSX_ARCHITECTURES="x86_64;arm64"
+cmake -S . -B build -DNUKE_ROOT=/Applications/Nuke15.1v4/Nuke15.1v4.app/Contents/MacOS -DCMAKE_BUILD_TYPE=Release -DCMAKE_OSX_ARCHITECTURES=arm64
 cmake --build build
 ```
 
