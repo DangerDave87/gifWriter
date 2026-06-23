@@ -117,6 +117,27 @@ parse_nuke_install_name() {
   fi
 }
 
+resolve_macos_install_dir() {
+  local path="$1"
+  local name
+  local app_bundle
+
+  name="$(basename "$path")"
+
+  if [[ "$name" == *.app && -d "${path}/Contents/MacOS" ]]; then
+    printf '%s\n' "${path}/Contents/MacOS"
+    return
+  fi
+
+  app_bundle="${path}/${name}.app"
+  if [[ -d "${app_bundle}/Contents/MacOS" ]]; then
+    printf '%s\n' "${app_bundle}/Contents/MacOS"
+    return
+  fi
+
+  printf '%s\n' "$path"
+}
+
 find_record_index_by_minor() {
   local array_name="$1"
   local target_minor="$2"
@@ -165,10 +186,7 @@ get_installed_nukes() {
     name="$(basename "$root")"
     parsed="$(parse_nuke_install_name "$name" || true)"
     if [[ -n "$parsed" ]]; then
-      install_dir="$root"
-      if [[ "$name" == *.app && -d "${root}/Contents/MacOS" ]]; then
-        install_dir="${root}/Contents/MacOS"
-      fi
+      install_dir="$(resolve_macos_install_dir "$root")"
       append_unique candidate_records "${parsed}|${install_dir}|filesystem"
     fi
 
@@ -176,10 +194,7 @@ get_installed_nukes() {
       name="$(basename "$dir")"
       parsed="$(parse_nuke_install_name "$name" || true)"
       if [[ -n "$parsed" ]]; then
-        install_dir="$dir"
-        if [[ "$name" == *.app && -d "${dir}/Contents/MacOS" ]]; then
-          install_dir="${dir}/Contents/MacOS"
-        fi
+        install_dir="$(resolve_macos_install_dir "$dir")"
         append_unique candidate_records "${parsed}|${install_dir}|filesystem"
       fi
     done < <(find "$root" -mindepth 1 -maxdepth 1 -type d -name 'Nuke*' -print0 2>/dev/null)

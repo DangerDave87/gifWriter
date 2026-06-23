@@ -3,6 +3,17 @@ include(FindPackageHandleStandardArgs)
 set(_NUKE_ROOT_HINTS)
 if(NUKE_ROOT)
   list(APPEND _NUKE_ROOT_HINTS "${NUKE_ROOT}")
+
+  if(APPLE)
+    if(EXISTS "${NUKE_ROOT}/Contents/MacOS")
+      list(APPEND _NUKE_ROOT_HINTS "${NUKE_ROOT}/Contents/MacOS")
+    endif()
+
+    get_filename_component(_NUKE_ROOT_NAME "${NUKE_ROOT}" NAME)
+    if(EXISTS "${NUKE_ROOT}/${_NUKE_ROOT_NAME}.app/Contents/MacOS")
+      list(APPEND _NUKE_ROOT_HINTS "${NUKE_ROOT}/${_NUKE_ROOT_NAME}.app/Contents/MacOS")
+    endif()
+  endif()
 endif()
 
 if(WIN32)
@@ -17,13 +28,13 @@ endif()
 find_path(NUKE_INCLUDE_DIR
   NAMES DDImage/Writer.h
   HINTS ${_NUKE_ROOT_HINTS}
-  PATH_SUFFIXES include include/DDImage
+  PATH_SUFFIXES include include/DDImage Contents/MacOS/include Contents/MacOS/include/DDImage
 )
 
 find_library(NUKE_DDIMAGE_LIBRARY
   NAMES DDImage
   HINTS ${_NUKE_ROOT_HINTS}
-  PATH_SUFFIXES lib libs bin
+  PATH_SUFFIXES lib libs bin Contents/MacOS
 )
 
 find_package_handle_standard_args(Nuke

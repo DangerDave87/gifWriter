@@ -268,7 +268,7 @@ cmake --build build
 ```
 
 ```bash
-cmake -S . -B build -DNUKE_ROOT=/Applications/Nuke15.1v4 -DCMAKE_BUILD_TYPE=Release -DCMAKE_OSX_ARCHITECTURES="x86_64;arm64"
+cmake -S . -B build -DNUKE_ROOT=/Applications/Nuke15.1v4/Nuke15.1v4.app/Contents/MacOS -DCMAKE_BUILD_TYPE=Release -DCMAKE_OSX_ARCHITECTURES="x86_64;arm64"
 cmake --build build
 ```
 
