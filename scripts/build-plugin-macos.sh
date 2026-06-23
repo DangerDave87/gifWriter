@@ -60,7 +60,7 @@ append_unique() {
   local array_name="$1"
   local value="$2"
   local existing
-  eval "local current=(\"\${${array_name}[@]}\")"
+  eval "local current=(\"\${${array_name}[@]-}\")"
 
   for existing in "${current[@]}"; do
     if [[ "$existing" == "$value" ]]; then
@@ -121,7 +121,7 @@ find_record_index_by_minor() {
   local array_name="$1"
   local target_minor="$2"
   local records index record minor
-  eval "records=(\"\${${array_name}[@]}\")"
+  eval "records=(\"\${${array_name}[@]-}\")"
 
   for ((index = 0; index < ${#records[@]}; ++index)); do
     record="${records[$index]}"
@@ -139,7 +139,7 @@ find_record_by_minor() {
   local array_name="$1"
   local target_minor="$2"
   local records record minor
-  eval "records=(\"\${${array_name}[@]}\")"
+  eval "records=(\"\${${array_name}[@]-}\")"
 
   for record in "${records[@]}"; do
     IFS='|' read -r minor _rest <<< "$record"
