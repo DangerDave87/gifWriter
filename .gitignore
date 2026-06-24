@@ -3,3 +3,4 @@ build/
 out/
 _references/
 artifacts/
+.DS_Store
