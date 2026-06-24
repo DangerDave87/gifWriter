@@ -2,44 +2,23 @@
 
 This repository contains a native NDK-based GIF writer plug-in for Nuke.
 
-## Current status
+![gifWriter UI](https://github.com/DangerDave87/misc/blob/main/screenshots/gifWriter.jpg?raw=1)
 
-The plug-in now provides a native animated GIF writer for Nuke with:
+## Writer settings
 
-- CMake-based project layout
-- native `gifWriter` shared-library target
-- `DD::Image::FileWriter`-based writer registration for `.gif`
-- GIF export settings UI
-- real still-frame and animated GIF encoding
-- whole-sequence buffering for shared animation palette generation
-- adaptive global palette generation from sampled frames
-- spec-correct GIF LZW compression
-- palette-size control
-- automatic frame differencing for smaller opaque animations
-- loop control, channel-driven transparency, threshold, fps, and dither options
+- `loop mode`: `Infinite` loops forever, `Fixed` shows a loop count field, and `No Loop` plays the animation once.
+- `fps`: defaults to the Nuke project frame rate and controls the GIF frame delay. A single-frame render is still supported.
+- `max colors`: `256`, `128`, `64`, or `32`. Lower values usually reduce file size, but can simplify gradients and fine color detail.
+- `dither`: `None`, `Floyd-Steinberg`, or `Ordered`. Dithering can improve gradients, but may add visible texture or noise.
+- `alpha min`: a `0-1` threshold used when the selected Write channels include alpha. Values at or below the threshold become fully transparent.
+- `channels`: the writer uses the selected Write channels in order, so it also works with non-`rgba` layers.
 
-The writer behaves like a movie writer:
+Layer and channel behavior:
 
-- `movie()` always returns `true`
-- `execute()` is called once per input frame
-- source frames are buffered during `execute()`
-- the final GIF is encoded and written in `finish()`
-
-The export pipeline currently does the following:
-
-- RGBA is read back from Nuke rows
-- output conversion uses the writer LUT path via `to_byte()`
-- a shared adaptive palette is built from sampled animation frames
-- pixels are quantized into that shared indexed palette
-- GIF image data is compressed with a dictionary-based LZW encoder
-- the `max colors` knob reduces the effective palette size
-- optional dithering and transparency thresholding are applied
-- Write `channels=rgba` produces transparent GIF output, while `channels=rgb` preserves the visible source RGB color without adding GIF transparency
-- looping is controlled by the loop mode / loop count knobs
-- frame timing is derived from the `fps` knob
-- opaque animations automatically crop frames to changed regions to reduce file size
-
-The current implementation is now producing competitive results against the project reference exports for the tested sequence. Transparent animations still use conservative frame handling, so there is still room for additional size reductions on more difficult shots.
+- `1` selected channel: treated as alpha, with black RGB.
+- `2` selected channels: first channel is used as grayscale RGB, second channel as alpha.
+- `3` selected channels: used as RGB.
+- `4` or more selected channels: first three channels are used as RGB and the fourth as alpha.
 
 ## Expected output binary
 
@@ -282,7 +261,7 @@ If auto-detection is not enough, you can also pass:
 - `-DNUKE_INCLUDE_DIR=...`
 - `-DNUKE_DDIMAGE_LIBRARY=...`
 
-## Install for testing
+## Install plugin
 
 Add the [nuke](/D:/002_Projekt/NukePlugins/GifExporter/nuke) folder to one of these locations:
 
