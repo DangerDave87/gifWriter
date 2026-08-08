@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -30,17 +31,44 @@ struct GifEncoderOptions {
   GifLoopMode loopMode = GifLoopMode::kInfinite;
   int loopCount = 0;
   int frameDelayCentiseconds = 4;
+  double framesPerSecond = 24.0;
   int maxColors = 256;
 };
 
 struct GifPalette {
   std::vector<std::uint8_t> rgbTable;
+  std::vector<std::uint8_t> nearestColorLookup;
   int tableSize = 256;
   int activeColorCount = 256;
   std::uint8_t transparentIndex = 255;
   int minimumCodeSize = 8;
   std::uint8_t packedField = 0xf7;
 };
+
+struct GifPaletteSampleSet {
+  std::vector<std::uint8_t> rgbSamples;
+  std::uint64_t candidateCount = 0;
+  std::uint64_t frameCount = 0;
+};
+
+int GifFrameDelayCentiseconds(
+    double framesPerSecond,
+    std::size_t frameIndex,
+    std::int64_t& emittedCentiseconds);
+
+bool AddGifPaletteFrameSamples(
+    int width,
+    int height,
+    const std::vector<std::uint8_t>& rgbaPixels,
+    const GifEncoderOptions& options,
+    GifPaletteSampleSet& samples,
+    std::string& error);
+
+bool BuildAdaptiveGifPaletteFromSamples(
+    const GifPaletteSampleSet& samples,
+    const GifEncoderOptions& options,
+    GifPalette& palette,
+    std::string& error);
 
 bool BuildAdaptiveGifPalette(
     int width,

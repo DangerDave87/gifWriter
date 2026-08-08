@@ -1,8 +1,12 @@
 #pragma once
 
+#include <cstddef>
+#include <cstdio>
 #include <cstdint>
 #include <string>
 #include <vector>
+
+#include "GifEncoder.h"
 
 #include "DDImage/Channel.h"
 #include "DDImage/FileWriter.h"
@@ -31,6 +35,7 @@ public:
   };
 
   explicit GifWriter(DD::Image::Write* writeNode);
+  ~GifWriter() override;
 
   void execute() override;
   bool movie() const override;
@@ -48,6 +53,11 @@ private:
   std::vector<DD::Image::Channel> selectedWriteChannels() const;
   bool hasOutputAlphaChannel() const;
   bool readCurrentFrameRGBA(std::vector<std::uint8_t>& rgbaPixels, std::string& error);
+  bool beginExecution(std::string& error);
+  bool appendFrameToSpool(const std::vector<std::uint8_t>& rgbaPixels, std::string& error);
+  bool readFrameFromSpool(std::vector<std::uint8_t>& rgbaPixels, std::string& error);
+  void reportExecutionFailure(const std::string& error);
+  void closeSpoolFile();
   void resetExecutionState();
   void updateKnobVisibility();
 
@@ -59,7 +69,14 @@ private:
   double fps_;
 
   bool fileOpen_;
-  std::vector<std::vector<std::uint8_t>> bufferedRgbaFrames_;
+  bool executionFailed_;
+  std::FILE* spoolFile_;
+  int frameWidth_;
+  int frameHeight_;
+  std::size_t frameByteSize_;
+  std::size_t spooledFrameCount_;
+  GifEncoderOptions encoderOptions_;
+  GifPaletteSampleSet paletteSamples_;
 };
 
 } // namespace GifExporter

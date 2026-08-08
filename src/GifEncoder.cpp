@@ -17,6 +17,15 @@ namespace GifExporter {
 namespace {
 
 constexpr int kOrderedDitherSize = 4;
+constexpr int kNearestColorBits = 6;
+constexpr int kNearestColorLevels = 1 << kNearestColorBits;
+constexpr int kNearestColorShift = 8 - kNearestColorBits;
+constexpr std::size_t kNearestColorLookupSize =
+    static_cast<std::size_t>(kNearestColorLevels) *
+    static_cast<std::size_t>(kNearestColorLevels) *
+    static_cast<std::size_t>(kNearestColorLevels);
+constexpr std::size_t kMaxPaletteSamples = 65536;
+constexpr std::size_t kPaletteSamplesPerFrame = 8192;
 constexpr std::array<int, kOrderedDitherSize * kOrderedDitherSize> kBayer4x4 = {
     0, 8, 2, 10,
     12, 4, 14, 6,
@@ -138,6 +147,10 @@ void appendApplicationLoopExtension(
 
 class GifBitPacker {
 public:
+  explicit GifBitPacker(std::size_t expectedBytes) {
+    bytes_.reserve(expectedBytes);
+  }
+
   void writeCode(int code, int bitCount) {
     bitBuffer_ |= (static_cast<std::uint32_t>(code) << bufferedBits_);
     bufferedBits_ += bitCount;
@@ -172,81 +185,76 @@ std::vector<std::uint8_t> encodeLzwIndices(const std::vector<std::uint8_t>& indi
   const int clearCode = 1 << minimumCodeSize;
   const int endOfInformationCode = clearCode + 1;
 
-  std::vector<int> codes;
-  codes.reserve(indices.size() / 2U + 16U);
-
-  std::unordered_map<std::string, int> dictionary;
+  std::unordered_map<std::uint32_t, int> dictionary;
   dictionary.reserve(4096);
 
   auto resetDictionary = [&]() {
     dictionary.clear();
-    for (int code = 0; code < clearCode; ++code) {
-      dictionary.emplace(std::string(1, static_cast<char>(code)), code);
+  };
+
+  GifBitPacker packer(indices.size() / 2U + 16U);
+  int packedCodeSize = minimumCodeSize + 1;
+  int packedNextDictionaryCode = endOfInformationCode + 1;
+  bool sawPreviousPackedCode = false;
+
+  auto emitCode = [&](int code) {
+    packer.writeCode(code, packedCodeSize);
+
+    if (code == clearCode) {
+      packedCodeSize = minimumCodeSize + 1;
+      packedNextDictionaryCode = endOfInformationCode + 1;
+      sawPreviousPackedCode = false;
+      return;
     }
+
+    if (code == endOfInformationCode) {
+      return;
+    }
+
+    if (sawPreviousPackedCode && packedNextDictionaryCode < 4096) {
+      ++packedNextDictionaryCode;
+      if (packedNextDictionaryCode == (1 << packedCodeSize) && packedCodeSize < 12) {
+        ++packedCodeSize;
+      }
+    }
+
+    sawPreviousPackedCode = true;
   };
 
   resetDictionary();
-  codes.push_back(clearCode);
+  emitCode(clearCode);
 
-  std::string sequence(1, static_cast<char>(indices.front()));
+  int sequenceCode = static_cast<int>(indices.front());
   int nextDictionaryCode = endOfInformationCode + 1;
 
   for (std::size_t index = 1; index < indices.size(); ++index) {
-    const char symbol = static_cast<char>(indices[index]);
-    std::string extendedSequence = sequence;
-    extendedSequence.push_back(symbol);
+    const int symbol = static_cast<int>(indices[index]);
+    const std::uint32_t dictionaryKey =
+        (static_cast<std::uint32_t>(sequenceCode) << 8U) |
+        static_cast<std::uint32_t>(symbol);
 
-    const auto found = dictionary.find(extendedSequence);
+    const auto found = dictionary.find(dictionaryKey);
     if (found != dictionary.end()) {
-      sequence = std::move(extendedSequence);
+      sequenceCode = found->second;
       continue;
     }
 
-    codes.push_back(dictionary.at(sequence));
+    emitCode(sequenceCode);
 
     if (nextDictionaryCode < 4096) {
-      dictionary.emplace(std::move(extendedSequence), nextDictionaryCode);
+      dictionary.emplace(dictionaryKey, nextDictionaryCode);
       ++nextDictionaryCode;
     } else {
-      codes.push_back(clearCode);
+      emitCode(clearCode);
       resetDictionary();
       nextDictionaryCode = endOfInformationCode + 1;
     }
 
-    sequence.assign(1, symbol);
+    sequenceCode = symbol;
   }
 
-  codes.push_back(dictionary.at(sequence));
-  codes.push_back(endOfInformationCode);
-
-  GifBitPacker packer;
-  int codeSize = minimumCodeSize + 1;
-  nextDictionaryCode = endOfInformationCode + 1;
-  bool sawPreviousCode = false;
-
-  for (int code : codes) {
-    packer.writeCode(code, codeSize);
-
-    if (code == clearCode) {
-      codeSize = minimumCodeSize + 1;
-      nextDictionaryCode = endOfInformationCode + 1;
-      sawPreviousCode = false;
-      continue;
-    }
-
-    if (code == endOfInformationCode) {
-      break;
-    }
-
-    if (sawPreviousCode && nextDictionaryCode < 4096) {
-      ++nextDictionaryCode;
-      if (nextDictionaryCode == (1 << codeSize) && codeSize < 12) {
-        ++codeSize;
-      }
-    }
-
-    sawPreviousCode = true;
-  }
+  emitCode(sequenceCode);
+  emitCode(endOfInformationCode);
 
   return packer.finish();
 }
@@ -268,28 +276,34 @@ void appendImageDataBlocks(
   bytes.push_back(0x00);
 }
 
-std::vector<int> buildSampledFrameIndices(std::size_t frameCount, std::size_t limit) {
-  std::vector<int> indices;
-  if (frameCount == 0) {
-    return indices;
+std::uint64_t mixSampleIndex(std::uint64_t value) {
+  value += 0x9e3779b97f4a7c15ULL;
+  value = (value ^ (value >> 30U)) * 0xbf58476d1ce4e5b9ULL;
+  value = (value ^ (value >> 27U)) * 0x94d049bb133111ebULL;
+  return value ^ (value >> 31U);
+}
+
+void addPaletteSample(GifPaletteSampleSet& samples, const ColorSample& sample) {
+  ++samples.candidateCount;
+
+  const std::size_t currentSampleCount = samples.rgbSamples.size() / 3U;
+  if (currentSampleCount < kMaxPaletteSamples) {
+    samples.rgbSamples.push_back(sample.red);
+    samples.rgbSamples.push_back(sample.green);
+    samples.rgbSamples.push_back(sample.blue);
+    return;
   }
 
-  const std::size_t sampleCount = std::min(frameCount, limit);
-  indices.reserve(sampleCount);
-  if (sampleCount == frameCount) {
-    for (std::size_t index = 0; index < frameCount; ++index) {
-      indices.push_back(static_cast<int>(index));
-    }
-    return indices;
+  const std::uint64_t replacementIndex =
+      mixSampleIndex(samples.candidateCount) % samples.candidateCount;
+  if (replacementIndex >= kMaxPaletteSamples) {
+    return;
   }
 
-  for (std::size_t index = 0; index < sampleCount; ++index) {
-    const double position = static_cast<double>(index) * static_cast<double>(frameCount - 1) /
-        static_cast<double>(sampleCount - 1);
-    indices.push_back(static_cast<int>(std::lround(position)));
-  }
-
-  return indices;
+  const std::size_t sampleOffset = static_cast<std::size_t>(replacementIndex) * 3U;
+  samples.rgbSamples[sampleOffset + 0] = sample.red;
+  samples.rgbSamples[sampleOffset + 1] = sample.green;
+  samples.rgbSamples[sampleOffset + 2] = sample.blue;
 }
 
 void composePaletteSample(
@@ -355,43 +369,8 @@ double boxScore(const ColorBox& box) {
 }
 
 std::vector<PaletteColor> buildAdaptivePaletteColors(
-    int width,
-    int height,
-    const std::vector<std::vector<std::uint8_t>>& rgbaFrames,
-    const GifEncoderOptions& options,
+    std::vector<ColorSample> samples,
     int targetColorCount) {
-  constexpr std::size_t kMaxPaletteFrames = 12;
-  constexpr std::size_t kMaxPaletteSamples = 65536;
-
-  std::vector<ColorSample> samples;
-  const std::vector<int> frameIndices = buildSampledFrameIndices(rgbaFrames.size(), kMaxPaletteFrames);
-  const std::size_t framesToSample = std::max<std::size_t>(1, frameIndices.size());
-  const std::size_t perFrameBudget = std::max<std::size_t>(1024, kMaxPaletteSamples / framesToSample);
-  const std::size_t pixelCount = static_cast<std::size_t>(width) * static_cast<std::size_t>(height);
-  const std::size_t stride = std::max<std::size_t>(
-      1,
-      static_cast<std::size_t>(std::sqrt(static_cast<double>(std::max<std::size_t>(1, pixelCount / perFrameBudget)))));
-
-  samples.reserve(std::min<std::size_t>(kMaxPaletteSamples, pixelCount * framesToSample));
-
-  for (int frameIndex : frameIndices) {
-    const std::vector<std::uint8_t>& rgbaPixels = rgbaFrames[static_cast<std::size_t>(frameIndex)];
-    for (int y = 0; y < height; y += static_cast<int>(stride)) {
-      for (int x = 0; x < width; x += static_cast<int>(stride)) {
-        const std::size_t pixelIndex =
-            static_cast<std::size_t>(y) * static_cast<std::size_t>(width) + static_cast<std::size_t>(x);
-        const std::size_t pixelOffset = pixelIndex * 4U;
-
-        ColorSample sample{};
-        bool includeSample = false;
-        composePaletteSample(rgbaPixels, pixelOffset, options, sample, includeSample);
-        if (includeSample) {
-          samples.push_back(sample);
-        }
-      }
-    }
-  }
-
   if (samples.empty()) {
     return {{0, 0, 0}};
   }
@@ -474,15 +453,72 @@ std::vector<PaletteColor> buildAdaptivePaletteColors(
   return paletteColors;
 }
 
+std::size_t nearestColorLookupIndex(int red, int green, int blue) {
+  const int redCell = std::clamp(red, 0, 255) >> kNearestColorShift;
+  const int greenCell = std::clamp(green, 0, 255) >> kNearestColorShift;
+  const int blueCell = std::clamp(blue, 0, 255) >> kNearestColorShift;
+  return
+      (static_cast<std::size_t>(redCell) << (kNearestColorBits * 2)) |
+      (static_cast<std::size_t>(greenCell) << kNearestColorBits) |
+      static_cast<std::size_t>(blueCell);
+}
+
+void buildNearestColorLookup(GifPalette& palette) {
+  palette.nearestColorLookup.resize(kNearestColorLookupSize);
+
+  for (int redCell = 0; redCell < kNearestColorLevels; ++redCell) {
+    const int red = std::min(255, (redCell << kNearestColorShift) + (1 << (kNearestColorShift - 1)));
+    for (int greenCell = 0; greenCell < kNearestColorLevels; ++greenCell) {
+      const int green = std::min(255, (greenCell << kNearestColorShift) + (1 << (kNearestColorShift - 1)));
+      for (int blueCell = 0; blueCell < kNearestColorLevels; ++blueCell) {
+        const int blue = std::min(255, (blueCell << kNearestColorShift) + (1 << (kNearestColorShift - 1)));
+        int bestIndex = 0;
+        std::uint32_t bestDistance = std::numeric_limits<std::uint32_t>::max();
+
+        for (int paletteIndex = 0; paletteIndex < palette.activeColorCount; ++paletteIndex) {
+          const int paletteOffset = paletteIndex * 3;
+          const int redDistance = red - static_cast<int>(palette.rgbTable[paletteOffset + 0]);
+          const int greenDistance = green - static_cast<int>(palette.rgbTable[paletteOffset + 1]);
+          const int blueDistance = blue - static_cast<int>(palette.rgbTable[paletteOffset + 2]);
+          const std::uint32_t distance = static_cast<std::uint32_t>(
+              redDistance * redDistance +
+              greenDistance * greenDistance +
+              blueDistance * blueDistance);
+
+          if (distance < bestDistance) {
+            bestDistance = distance;
+            bestIndex = paletteIndex;
+          }
+        }
+
+        const std::size_t lookupIndex =
+            (static_cast<std::size_t>(redCell) << (kNearestColorBits * 2)) |
+            (static_cast<std::size_t>(greenCell) << kNearestColorBits) |
+            static_cast<std::size_t>(blueCell);
+        palette.nearestColorLookup[lookupIndex] = static_cast<std::uint8_t>(bestIndex);
+      }
+    }
+  }
+}
+
 int nearestPaletteIndex(float red, float green, float blue, const GifPalette& palette) {
+  const int roundedRed = std::clamp(static_cast<int>(std::lround(red)), 0, 255);
+  const int roundedGreen = std::clamp(static_cast<int>(std::lround(green)), 0, 255);
+  const int roundedBlue = std::clamp(static_cast<int>(std::lround(blue)), 0, 255);
+
+  if (palette.nearestColorLookup.size() == kNearestColorLookupSize) {
+    return static_cast<int>(palette.nearestColorLookup[
+        nearestColorLookupIndex(roundedRed, roundedGreen, roundedBlue)]);
+  }
+
   int bestIndex = 0;
   std::uint32_t bestDistance = std::numeric_limits<std::uint32_t>::max();
 
   for (int index = 0; index < palette.activeColorCount; ++index) {
     const int paletteOffset = index * 3;
-    const int redDistance = static_cast<int>(std::lround(red)) - static_cast<int>(palette.rgbTable[paletteOffset + 0]);
-    const int greenDistance = static_cast<int>(std::lround(green)) - static_cast<int>(palette.rgbTable[paletteOffset + 1]);
-    const int blueDistance = static_cast<int>(std::lround(blue)) - static_cast<int>(palette.rgbTable[paletteOffset + 2]);
+    const int redDistance = roundedRed - static_cast<int>(palette.rgbTable[paletteOffset + 0]);
+    const int greenDistance = roundedGreen - static_cast<int>(palette.rgbTable[paletteOffset + 1]);
+    const int blueDistance = roundedBlue - static_cast<int>(palette.rgbTable[paletteOffset + 2]);
     const std::uint32_t distance = static_cast<std::uint32_t>(
         redDistance * redDistance +
         greenDistance * greenDistance +
@@ -714,31 +750,106 @@ void extractSubrectIndices(
 
 } // namespace
 
-bool BuildAdaptiveGifPalette(
+int GifFrameDelayCentiseconds(
+    double framesPerSecond,
+    std::size_t frameIndex,
+    std::int64_t& emittedCentiseconds) {
+  const double safeFramesPerSecond =
+      std::isfinite(framesPerSecond) && framesPerSecond > 0.0
+      ? framesPerSecond
+      : 24.0;
+  const long double idealCumulativeDelay =
+      (static_cast<long double>(frameIndex) + 1.0L) * 100.0L /
+      static_cast<long double>(safeFramesPerSecond);
+  const std::int64_t targetCumulativeDelay =
+      static_cast<std::int64_t>(std::llround(idealCumulativeDelay));
+  const std::int64_t delay = std::clamp<std::int64_t>(
+      targetCumulativeDelay - emittedCentiseconds,
+      1,
+      65535);
+  emittedCentiseconds += delay;
+  return static_cast<int>(delay);
+}
+
+bool AddGifPaletteFrameSamples(
     int width,
     int height,
-    const std::vector<std::vector<std::uint8_t>>& rgbaFrames,
+    const std::vector<std::uint8_t>& rgbaPixels,
     const GifEncoderOptions& options,
-    GifPalette& palette,
+    GifPaletteSampleSet& samples,
     std::string& error) {
   error.clear();
 
   if (width <= 0 || height <= 0) {
-    error = "GIF export requires a positive image size.";
-    return false;
-  }
-  if (rgbaFrames.empty()) {
-    error = "GIF export requires at least one frame.";
+    error = "GIF palette sampling requires a positive image size.";
     return false;
   }
 
   const std::size_t expectedPixelBytes =
       static_cast<std::size_t>(width) * static_cast<std::size_t>(height) * 4U;
-  for (const std::vector<std::uint8_t>& frame : rgbaFrames) {
-    if (frame.size() != expectedPixelBytes) {
-      error = "GIF encoder received an unexpected RGBA buffer size while building the palette.";
-      return false;
+  if (rgbaPixels.size() != expectedPixelBytes) {
+    error = "GIF palette sampling received an unexpected RGBA buffer size.";
+    return false;
+  }
+
+  const std::size_t pixelCount =
+      static_cast<std::size_t>(width) * static_cast<std::size_t>(height);
+  const std::size_t pixelsPerSample =
+      std::max<std::size_t>(1, pixelCount / kPaletteSamplesPerFrame);
+  const int stride = std::max(
+      1,
+      static_cast<int>(std::sqrt(static_cast<double>(pixelsPerSample))));
+
+  const std::uint64_t frameSeed = mixSampleIndex(samples.frameCount + 1U);
+  const int xOffsetRange = std::max(1, std::min(stride, width));
+  const int yOffsetRange = std::max(1, std::min(stride, height));
+  const int xOffset = static_cast<int>(frameSeed % static_cast<std::uint64_t>(xOffsetRange));
+  const int yOffset = static_cast<int>(
+      mixSampleIndex(frameSeed) % static_cast<std::uint64_t>(yOffsetRange));
+
+  for (int y = yOffset; y < height; y += stride) {
+    for (int x = xOffset; x < width; x += stride) {
+      const std::size_t pixelIndex =
+          static_cast<std::size_t>(y) * static_cast<std::size_t>(width) +
+          static_cast<std::size_t>(x);
+      const std::size_t pixelOffset = pixelIndex * 4U;
+
+      ColorSample sample{};
+      bool includeSample = false;
+      composePaletteSample(rgbaPixels, pixelOffset, options, sample, includeSample);
+      if (includeSample) {
+        addPaletteSample(samples, sample);
+      }
     }
+  }
+
+  ++samples.frameCount;
+  return true;
+}
+
+bool BuildAdaptiveGifPaletteFromSamples(
+    const GifPaletteSampleSet& samples,
+    const GifEncoderOptions& options,
+    GifPalette& palette,
+    std::string& error) {
+  error.clear();
+
+  if (samples.frameCount == 0) {
+    error = "GIF export requires at least one sampled frame.";
+    return false;
+  }
+  if ((samples.rgbSamples.size() % 3U) != 0U) {
+    error = "GIF encoder received malformed palette samples.";
+    return false;
+  }
+
+  std::vector<ColorSample> colorSamples;
+  colorSamples.reserve(samples.rgbSamples.size() / 3U);
+  for (std::size_t offset = 0; offset < samples.rgbSamples.size(); offset += 3U) {
+    colorSamples.push_back({
+        samples.rgbSamples[offset + 0],
+        samples.rgbSamples[offset + 1],
+        samples.rgbSamples[offset + 2]});
   }
 
   palette.tableSize = sanitizeMaxColors(options.maxColors);
@@ -748,7 +859,7 @@ bool BuildAdaptiveGifPalette(
 
   const int targetColorCount = options.useTransparency ? (palette.tableSize - 1) : palette.tableSize;
   std::vector<PaletteColor> paletteColors =
-      buildAdaptivePaletteColors(width, height, rgbaFrames, options, targetColorCount);
+      buildAdaptivePaletteColors(std::move(colorSamples), targetColorCount);
   if (paletteColors.empty()) {
     paletteColors.push_back({0, 0, 0});
   }
@@ -778,7 +889,36 @@ bool BuildAdaptiveGifPalette(
     palette.rgbTable[transparentOffset + 2] = 0;
   }
 
+  buildNearestColorLookup(palette);
   return true;
+}
+
+bool BuildAdaptiveGifPalette(
+    int width,
+    int height,
+    const std::vector<std::vector<std::uint8_t>>& rgbaFrames,
+    const GifEncoderOptions& options,
+    GifPalette& palette,
+    std::string& error) {
+  error.clear();
+
+  if (width <= 0 || height <= 0) {
+    error = "GIF export requires a positive image size.";
+    return false;
+  }
+  if (rgbaFrames.empty()) {
+    error = "GIF export requires at least one frame.";
+    return false;
+  }
+
+  GifPaletteSampleSet samples;
+  for (const std::vector<std::uint8_t>& frame : rgbaFrames) {
+    if (!AddGifPaletteFrameSamples(width, height, frame, options, samples, error)) {
+      return false;
+    }
+  }
+
+  return BuildAdaptiveGifPaletteFromSamples(samples, options, palette, error);
 }
 
 bool QuantizeGifFrameToPalette(

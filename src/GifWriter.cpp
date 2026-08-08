@@ -2,7 +2,9 @@
 #include "GifEncoder.h"
 
 #include <algorithm>
+#include <cstdio>
 #include <cstdint>
+#include <limits>
 #include <string>
 #include <utility>
 #include <vector>
@@ -69,6 +71,7 @@ GifEncoderOptions makeEncoderOptions(
       : (loopMode == GifWriter::kLoopNone ? GifLoopMode::kNone : GifLoopMode::kInfinite);
   options.loopCount = loopCount;
   options.frameDelayCentiseconds = std::max(1, static_cast<int>(std::lround(100.0 / fps)));
+  options.framesPerSecond = fps;
   options.maxColors = selectedMaxColors(maxColorsMode);
   return options;
 }
@@ -94,22 +97,60 @@ GifWriter::GifWriter(Write* writeNode)
       maxColorsMode_(0),
       transparencyThreshold_(20.0F / 255.0F),
       fps_(24.0),
-      fileOpen_(false) {
+      fileOpen_(false),
+      executionFailed_(false),
+      spoolFile_(nullptr),
+      frameWidth_(0),
+      frameHeight_(0),
+      frameByteSize_(0),
+      spooledFrameCount_(0) {
   if (root_real_fps) {
     fps_ = root_real_fps();
   }
 }
 
+GifWriter::~GifWriter() {
+  closeSpoolFile();
+}
+
 void GifWriter::execute() {
-  std::vector<std::uint8_t> rgbaPixels;
-  std::string error;
-  if (!readCurrentFrameRGBA(rgbaPixels, error)) {
-    iop->critical("%s", error.c_str());
-    resetExecutionState();
+  if (executionFailed_) {
     return;
   }
 
-  bufferedRgbaFrames_.push_back(std::move(rgbaPixels));
+  std::string error;
+  if (!spoolFile_ && !beginExecution(error)) {
+    if (!error.empty()) {
+      reportExecutionFailure(error);
+    }
+    return;
+  }
+
+  if (width() != frameWidth_ || height() != frameHeight_) {
+    reportExecutionFailure("GIF export does not support frame dimensions changing during a render.");
+    return;
+  }
+
+  std::vector<std::uint8_t> rgbaPixels;
+  if (!readCurrentFrameRGBA(rgbaPixels, error)) {
+    reportExecutionFailure(error);
+    return;
+  }
+
+  if (!AddGifPaletteFrameSamples(
+          frameWidth_,
+          frameHeight_,
+          rgbaPixels,
+          encoderOptions_,
+          paletteSamples_,
+          error)) {
+    reportExecutionFailure(error);
+    return;
+  }
+
+  if (!appendFrameToSpool(rgbaPixels, error)) {
+    reportExecutionFailure(error);
+  }
 }
 
 bool GifWriter::movie() const {
@@ -117,103 +158,123 @@ bool GifWriter::movie() const {
 }
 
 void GifWriter::finish() {
-  if (bufferedRgbaFrames_.empty()) {
+  if (executionFailed_) {
     resetExecutionState();
     return;
   }
 
-  const int imageWidth = width();
-  const int imageHeight = height();
-  const bool alphaAvailable = hasOutputAlphaChannel();
-  const GifEncoderOptions options = makeEncoderOptions(
-      alphaAvailable,
-      loopMode_,
-      loopCount_,
-      ditherMode_,
-      maxColorsMode_,
-      transparencyThreshold_,
-      fps_);
+  if (spooledFrameCount_ == 0 || !spoolFile_ || !fileOpen_) {
+    if (fileOpen_ || spoolFile_) {
+      reportExecutionFailure("GIF export finished without any frames to encode.");
+    }
+    resetExecutionState();
+    return;
+  }
+
+  if (aborted()) {
+    reportExecutionFailure("GIF export was aborted.");
+    resetExecutionState();
+    return;
+  }
 
   std::string error;
   GifPalette palette;
-  if (!BuildAdaptiveGifPalette(imageWidth, imageHeight, bufferedRgbaFrames_, options, palette, error)) {
-    iop->critical("%s", error.c_str());
+  if (!BuildAdaptiveGifPaletteFromSamples(
+          paletteSamples_,
+          encoderOptions_,
+          palette,
+          error)) {
+    reportExecutionFailure(error);
     resetExecutionState();
     return;
   }
 
-  if (!open()) {
-    iop->critical("Failed to open the GIF output file.");
+  if (std::fflush(spoolFile_) != 0 || std::fseek(spoolFile_, 0, SEEK_SET) != 0) {
+    reportExecutionFailure("Failed to rewind the temporary GIF frame cache.");
     resetExecutionState();
     return;
   }
-  fileOpen_ = true;
 
   std::vector<std::uint8_t> bytes;
-  if (!EncodeGifAnimationHeader(imageWidth, imageHeight, options, palette, bytes, error)) {
-    iop->critical("%s", error.c_str());
-    close();
+  if (!EncodeGifAnimationHeader(
+          frameWidth_,
+          frameHeight_,
+          encoderOptions_,
+          palette,
+          bytes,
+          error)) {
+    reportExecutionFailure(error);
     resetExecutionState();
     return;
   }
 
   if (!write(bytes.data(), static_cast<FILE_OFFSET>(bytes.size()))) {
-    iop->critical("Failed to write GIF animation header.");
-    close();
+    reportExecutionFailure("Failed to write GIF animation header.");
     resetExecutionState();
     return;
   }
 
   GifIndexedFrame previousFrame;
   bool hasPreviousFrame = false;
-  const int frameCount = static_cast<int>(bufferedRgbaFrames_.size());
+  std::int64_t emittedCentiseconds = 0;
+  std::vector<std::uint8_t> rgbaPixels;
 
-  for (int frameIndex = 0; frameIndex < frameCount; ++frameIndex) {
+  for (std::size_t frameIndex = 0; frameIndex < spooledFrameCount_; ++frameIndex) {
     if (aborted()) {
-      iop->critical("GIF export was aborted.");
-      close();
+      reportExecutionFailure("GIF export was aborted.");
       resetExecutionState();
       return;
     }
 
-    progressFraction(frameIndex, std::max(1, frameCount));
+    progressFraction(
+        static_cast<double>(frameIndex) /
+        static_cast<double>(std::max<std::size_t>(1, spooledFrameCount_)));
+
+    if (!readFrameFromSpool(rgbaPixels, error)) {
+      reportExecutionFailure(error);
+      resetExecutionState();
+      return;
+    }
 
     GifIndexedFrame indexedFrame;
     if (!QuantizeGifFrameToPalette(
-            imageWidth,
-            imageHeight,
-            bufferedRgbaFrames_[static_cast<std::size_t>(frameIndex)],
-            options,
+            frameWidth_,
+            frameHeight_,
+            rgbaPixels,
+            encoderOptions_,
             palette,
             indexedFrame,
             error)) {
-      iop->critical("%s", error.c_str());
-      close();
+      reportExecutionFailure(error);
       resetExecutionState();
       return;
     }
+
+    GifEncoderOptions frameOptions = encoderOptions_;
+    frameOptions.frameDelayCentiseconds = GifFrameDelayCentiseconds(
+        encoderOptions_.framesPerSecond,
+        frameIndex,
+        emittedCentiseconds);
 
     bytes.clear();
     const GifIndexedFrame* previousFramePtr = hasPreviousFrame ? &previousFrame : nullptr;
     if (!EncodeGifAnimationFrame(
-            imageWidth,
-            imageHeight,
+            frameWidth_,
+            frameHeight_,
             indexedFrame,
             previousFramePtr,
-            options,
+            frameOptions,
             palette,
             true,
             bytes,
             error)) {
-      iop->critical("%s", error.c_str());
-      close();
+      reportExecutionFailure(error);
       resetExecutionState();
       return;
     }
 
     if (!write(bytes.data(), static_cast<FILE_OFFSET>(bytes.size()))) {
-      iop->critical("Failed to write GIF frame data.");
-      close();
+      reportExecutionFailure("Failed to write GIF frame data.");
       resetExecutionState();
       return;
     }
@@ -227,13 +288,18 @@ void GifWriter::finish() {
   bytes.clear();
   EncodeGifAnimationTrailer(bytes);
   if (!write(bytes.data(), static_cast<FILE_OFFSET>(bytes.size()))) {
-    iop->critical("Failed to finalize the GIF animation.");
-    close();
+    reportExecutionFailure("Failed to finalize the GIF animation.");
     resetExecutionState();
     return;
   }
 
-  close();
+  closeSpoolFile();
+  if (!close()) {
+    fileOpen_ = false;
+    resetExecutionState();
+    return;
+  }
+  fileOpen_ = false;
   resetExecutionState();
 }
 
@@ -419,6 +485,124 @@ bool GifWriter::readCurrentFrameRGBA(std::vector<std::uint8_t>& rgbaPixels, std:
   return true;
 }
 
+bool GifWriter::beginExecution(std::string& error) {
+  error.clear();
+
+  const int imageWidth = width();
+  const int imageHeight = height();
+  if (imageWidth <= 0 || imageHeight <= 0) {
+    error = "GIF export requires a non-empty image.";
+    return false;
+  }
+  if (imageWidth > 65535 || imageHeight > 65535) {
+    error = "GIF dimensions cannot exceed 65535 pixels.";
+    return false;
+  }
+
+  const std::size_t widthValue = static_cast<std::size_t>(imageWidth);
+  const std::size_t heightValue = static_cast<std::size_t>(imageHeight);
+  if (widthValue > std::numeric_limits<std::size_t>::max() / heightValue / 4U) {
+    error = "GIF frame dimensions exceed the supported memory size.";
+    return false;
+  }
+
+  frameWidth_ = imageWidth;
+  frameHeight_ = imageHeight;
+  frameByteSize_ = widthValue * heightValue * 4U;
+  encoderOptions_ = makeEncoderOptions(
+      hasOutputAlphaChannel(),
+      loopMode_,
+      loopCount_,
+      ditherMode_,
+      maxColorsMode_,
+      transparencyThreshold_,
+      fps_);
+
+  if (!open()) {
+    executionFailed_ = true;
+    return false;
+  }
+  fileOpen_ = true;
+
+  spoolFile_ = std::tmpfile();
+  if (!spoolFile_) {
+    error = "Failed to create the temporary GIF frame cache.";
+    return false;
+  }
+
+  return true;
+}
+
+bool GifWriter::appendFrameToSpool(
+    const std::vector<std::uint8_t>& rgbaPixels,
+    std::string& error) {
+  error.clear();
+  if (!spoolFile_) {
+    error = "The temporary GIF frame cache is not open.";
+    return false;
+  }
+  if (rgbaPixels.size() != frameByteSize_) {
+    error = "GIF frame dimensions changed while writing the temporary frame cache.";
+    return false;
+  }
+
+  const std::size_t writtenBytes =
+      std::fwrite(rgbaPixels.data(), 1U, rgbaPixels.size(), spoolFile_);
+  if (writtenBytes != rgbaPixels.size()) {
+    error = "Failed to write a frame to the temporary GIF frame cache. Check available disk space.";
+    return false;
+  }
+
+  ++spooledFrameCount_;
+  return true;
+}
+
+bool GifWriter::readFrameFromSpool(
+    std::vector<std::uint8_t>& rgbaPixels,
+    std::string& error) {
+  error.clear();
+  if (!spoolFile_) {
+    error = "The temporary GIF frame cache is not open.";
+    return false;
+  }
+
+  rgbaPixels.resize(frameByteSize_);
+  const std::size_t readBytes =
+      std::fread(rgbaPixels.data(), 1U, rgbaPixels.size(), spoolFile_);
+  if (readBytes != rgbaPixels.size()) {
+    error = "Failed to read a complete frame from the temporary GIF frame cache.";
+    return false;
+  }
+
+  return true;
+}
+
+void GifWriter::reportExecutionFailure(const std::string& error) {
+  if (!error.empty()) {
+    iop->critical("%s", error.c_str());
+  }
+
+  executionFailed_ = true;
+  closeSpoolFile();
+  if (fileOpen_) {
+    close();
+    fileOpen_ = false;
+  }
+
+  frameWidth_ = 0;
+  frameHeight_ = 0;
+  frameByteSize_ = 0;
+  spooledFrameCount_ = 0;
+  paletteSamples_ = GifPaletteSampleSet{};
+}
+
+void GifWriter::closeSpoolFile() {
+  if (spoolFile_) {
+    std::fclose(spoolFile_);
+    spoolFile_ = nullptr;
+  }
+}
+
 void GifWriter::updateKnobVisibility() {
   Knob* loopCountKnob = iop->knob("loop_count");
   if (loopCountKnob) {
@@ -440,8 +624,15 @@ void GifWriter::updateKnobVisibility() {
 }
 
 void GifWriter::resetExecutionState() {
+  closeSpoolFile();
   fileOpen_ = false;
-  bufferedRgbaFrames_.clear();
+  executionFailed_ = false;
+  frameWidth_ = 0;
+  frameHeight_ = 0;
+  frameByteSize_ = 0;
+  spooledFrameCount_ = 0;
+  encoderOptions_ = GifEncoderOptions{};
+  paletteSamples_ = GifPaletteSampleSet{};
 }
 
 } // namespace GifExporter
